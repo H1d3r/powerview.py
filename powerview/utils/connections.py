@@ -649,6 +649,7 @@ class CONNECTION:
 			self.nameserver = None
 		self.use_system_ns = args.use_system_ns
 		self.stack_trace = args.stack_trace
+		self.ldap_user_dn = args.ldap_user_dn
 
 		self.pfx = args.pfx
 		self.pfx_pass = None
@@ -1300,6 +1301,7 @@ class CONNECTION:
 					local_private_key_file=key_file.name,
 					local_certificate_file=cert_file.name,
 					validate=ssl.CERT_NONE,
+					version=ssl.PROTOCOL_TLS_CLIENT,
 					ciphers="ALL:@SECLEVEL=0",
 					ssl_options=[ssl.OP_ALL],
 				)
@@ -1970,6 +1972,12 @@ class CONNECTION:
 			"sasl_mechanism": ldap3.EXTERNAL
 		}
 
+		if self.ldap_user_dn:
+			ldap_connection_kwargs["sasl_credentials"] = f"dn:{self.ldap_user_dn}"
+
+		if not ldap_server_kwargs.get("use_ssl"):
+			ldap_connection_kwargs["auto_bind"] = ldap3.AUTO_BIND_TLS_BEFORE_BIND
+
 		try:
 			if seal_and_sign or self.use_sign_and_seal:
 				logging.debug("Using seal and sign")
@@ -2014,8 +2022,8 @@ class CONNECTION:
 			logging.error("Error during schannel authentication with error: %s", str(e))
 			sys.exit(0)
 		
-		if ldap_session.result is not None:
-			logging.error(f"AuthError: {str(ldap_session.result['message'])}")
+		if ldap_session.result is not None and ldap_session.result.get("result", 0) != 0:
+			logging.error(f"AuthError: {ldap_session.result}")
 			sys.exit(0)
 
 		return ldap_server, ldap_session

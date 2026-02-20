@@ -50,6 +50,7 @@ def arg_parse():
 	auth_type_group.add_argument("--use-simple-auth", dest="use_simple_auth", action="store_true", default=False, help='Authenticate with SIMPLE authentication')
 	auth_type_group.add_argument("--pfx", dest="pfx", action="store", help='Supply .pfx formatted certificate. Use --cert and --key if no pfx')
 
+	auth.add_argument("--ldap-user-dn", dest="ldap_user_dn", action="store", help="LDAP user DN for SASL EXTERNAL bind (e.g. CN=User,...). Optional")
 	auth.add_argument('--no-pass', action="store_true", help="don't ask for password (useful for -k)")
 	auth.add_argument('--aes-key', dest="auth_aes_key", action="store", metavar = "hex key", help='AES key to use for Kerberos Authentication \'(128 or 256 bits)\'')
 	auth.add_argument("--dc-ip", action='store', metavar='IP address', help='IP Address of the domain controller or KDC (Key Distribution Center) for Kerberos. If omitted it will use the domain part (FQDN) specified in the identity parameter')
@@ -1392,6 +1393,25 @@ def powerview_arg_parse(cmd):
 	set_domainrbcd_parser.add_argument('-SearchBase', action='store', dest='searchbase')
 	set_domainrbcd_parser.add_argument('-Server', action='store', dest='server')
 	set_domainrbcd_parser.add_argument('-OutFile', action='store', dest='outfile')
+
+	# set shadow credentials
+	set_shadowcred_parser = subparsers.add_parser('Set-ShadowCredential', aliases=['Set-ShadowCred'], exit_on_error=False)
+	set_shadowcred_parser.add_argument('-Identity', action='store', const=None, dest='identity')
+	action_group = set_shadowcred_parser.add_mutually_exclusive_group()
+	action_group.add_argument('-Add', action='store_true', dest='add')
+	action_group.add_argument('-Remove', action='store_true', dest='remove')
+	action_group.add_argument('-Clear', action='store_true', dest='clear')
+	action_group.add_argument('-List', action='store_true', dest='list')
+	set_shadowcred_parser.add_argument('-DeviceId', action='store', dest='deviceid')
+	set_shadowcred_parser.add_argument('-Export', action='store', dest='export', choices=['PFX', 'PEM', 'NONE'], default='PFX')
+	set_shadowcred_parser.add_argument('-CertOutFile', action='store', dest='cert_outfile')
+	set_shadowcred_password_group = set_shadowcred_parser.add_mutually_exclusive_group()
+	set_shadowcred_password_group.add_argument('-PfxPassword', action='store', dest='pfx_password')
+	set_shadowcred_password_group.add_argument('-NoPassword', action='store_true', default=False, dest='no_password')
+	set_shadowcred_parser.add_argument('-KeySize', action='store', dest='key_size', type=int, default=2048)
+	set_shadowcred_parser.add_argument('-SearchBase', action='store', dest='searchbase')
+	set_shadowcred_parser.add_argument('-Server', action='store', dest='server')
+	set_shadowcred_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# set domain object owner
 	set_domainobjectowner_parser = subparsers.add_parser('Set-DomainObjectOwner', aliases=['Set-ObjectOwner'], exit_on_error=False)

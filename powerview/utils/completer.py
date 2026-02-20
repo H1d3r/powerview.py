@@ -149,6 +149,8 @@ COMMANDS = {
     'Set-DomainComputerPassword':['-Identity','-AccountPassword', '-OldPassword','-Server','-OutFile'],
     'Set-DomainRBCD':['-Identity','-DelegateFrom','-SearchBase','-Server','-OutFile'],
     'Set-RBCD':['-Identity','-DelegateFrom','-SearchBase','-Server','-OutFile'],
+    'Set-ShadowCredential':['-Identity','-Add','-Remove','-Clear','-List','-DeviceId','-Export','-CertOutFile','-PfxPassword','-NoPassword','-KeySize','-SearchBase','-Server','-OutFile'],
+    'Set-ShadowCred':['-Identity','-Add','-Remove','-Clear','-List','-DeviceId','-Export','-CertOutFile','-PfxPassword','-NoPassword','-KeySize','-SearchBase','-Server','-OutFile'],
     'Set-DomainObjectOwner':['-TargetIdentity','-PrincipalIdentity','-SearchBase','-Server','-OutFile'],
     'Set-ObjectOwner':['-TargetIdentity','-PrincipalIdentity','-SearchBase','-Server','-OutFile'],
     'Set-NetService':['-Computer','-Name','-DisplayName','-Path','-Password','-ServiceType','-StartType','-DelayedStart'],

@@ -16,6 +16,7 @@ from powerview.modules.dacledit import DACLedit
 from powerview.modules.products import EDR
 from powerview.modules.gpo import GPO
 from powerview.modules.exchange import ExchangeEnum
+from powerview.modules.shadowcred import ShadowCredential
 from powerview.utils.helpers import *
 from powerview.utils.connections import CONNECTION
 from powerview.utils.storage import Storage
@@ -4046,6 +4047,46 @@ displayName=New Group Policy Object
 			return False
 
 		return True
+
+	def set_shadowcredential(self, identity=None, action="add", device_id=None, export="PFX", cert_outfile=None, pfx_password=None, no_password=False, key_size=2048, searchbase=None, args=None):
+		if args is not None:
+			if hasattr(args, 'identity') and args.identity is not None:
+				identity = args.identity
+			if hasattr(args, 'searchbase') and args.searchbase is not None:
+				searchbase = args.searchbase
+			if hasattr(args, 'deviceid') and args.deviceid is not None:
+				device_id = args.deviceid
+			if hasattr(args, 'export') and args.export is not None:
+				export = args.export
+			if hasattr(args, 'cert_outfile') and args.cert_outfile is not None:
+				cert_outfile = args.cert_outfile
+			if hasattr(args, 'pfx_password') and args.pfx_password is not None:
+				pfx_password = args.pfx_password
+			if hasattr(args, 'no_password') and args.no_password is not None:
+				no_password = args.no_password
+			if hasattr(args, 'key_size') and args.key_size is not None:
+				key_size = args.key_size
+			if hasattr(args, 'list') and args.list:
+				action = 'list'
+			elif hasattr(args, 'clear') and args.clear:
+				action = 'clear'
+			elif hasattr(args, 'remove') and args.remove:
+				action = 'remove'
+			elif hasattr(args, 'add') and args.add:
+				action = 'add'
+
+		shadow = ShadowCredential(self)
+		return shadow.execute(
+			identity=identity,
+			action=action,
+			device_id=device_id,
+			export=export,
+			cert_outfile=cert_outfile,
+			pfx_password=pfx_password,
+			no_password=no_password,
+			key_size=key_size,
+			searchbase=searchbase,
+		)
 
 	def set_domainobjectowner(self, targetidentity, principalidentity, searchbase=None, args=None):
 		"""

@@ -184,6 +184,7 @@ ConvertFrom-SID                Get-DomainObjectOwner          Invoke-ASREPRoast 
 ConvertFrom-UACValue           Get-DomainRBCD                 Invoke-DFSCoerce               Remove-ObjectAcl               tasklist 
 Disable-DomainDNSRecord        Get-DomainSCCM                 Invoke-Kerberoast              Restart-Computer               
 Find-ForeignGroup              Get-DomainTrust                Invoke-MessageBox              Restore-ADObject               
+Set-ShadowCredential           Set-ShadowCred
 ```
 
 ### Domain/LDAP Functions
@@ -221,6 +222,7 @@ Find-ForeignGroup              Get-DomainTrust                Invoke-MessageBox 
 |Set-DomainObject|Set-ADObject|Set for specified domain objects in AD|
 |Set-DomainObjectDN|Set-ADObjectDN| Modify object's distinguishedName attribute as well as changing OU|
 |Set-DomainObjectOwner|Set-ObjectOwner|Set owner of the AD object|
+|Set-ShadowCredential|Set-ShadowCred|Manage msDS-KeyCredentialLink (Shadow Credentials) for a domain object|
 |Add-DomainDNSRecord||Add Domain DNS Record|
 |Disable-DomainDNSRecord||Disabling DNS Record by pointing to invalid address|
 |Add-DomainGMSA|Add-GMSA|Create a new Group Managed Service Account (gMSA) in the domain|

@@ -801,6 +801,16 @@ def main():
                                         powerview.set_domainrbcd(pv_args.identity, pv_args.delegatefrom, args=pv_args)
                                 else:
                                     logging.error('-Identity and -DelegateFrom flags are required')
+                            elif pv_args.module.casefold() == 'set-shadowcredential' or pv_args.module.casefold() == 'set-shadowcred':
+                                if pv_args.identity is None:
+                                    logging.error('-Identity flag is required')
+                                elif pv_args.remove and not pv_args.deviceid:
+                                    logging.error('-DeviceId flag is required when using -Remove')
+                                else:
+                                    if temp_powerview:
+                                        entries = temp_powerview.set_shadowcredential(args=pv_args)
+                                    else:
+                                        entries = powerview.set_shadowcredential(args=pv_args)
                             elif pv_args.module.casefold() == 'set-domainobjectowner' or pv_args.module.casefold() == 'set-objectowner':
                                 if pv_args.targetidentity is not None and pv_args.principalidentity is not None:
                                     if temp_powerview:
