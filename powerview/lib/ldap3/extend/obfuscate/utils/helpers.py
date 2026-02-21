@@ -7,13 +7,13 @@ from ..core.constants import (
 	WILDCARD, EXCEPTION_CHARS, ATTRIBUTE_OID, EXCEPTION_ATTRIBUTES
 )
 
+# Pre-compute casefolded sets at module load for O(1) lookups
+_EXCEPTION_ATTRS_SET = frozenset(e.casefold() for e in EXCEPTION_ATTRIBUTES)
+_EXCEPTION_OIDS_SET = frozenset(val.casefold() for val in ATTRIBUTE_OID.values())
+
 def in_exception(attribute):
 	attribute_casefolded = attribute.casefold()
-
-	in_exception_attributes = attribute_casefolded in (e.casefold() for e in EXCEPTION_ATTRIBUTES)
-	in_exception_oid = attribute_casefolded in (val.casefold() for val in ATTRIBUTE_OID.values())
-
-	return in_exception_attributes or in_exception_oid
+	return attribute_casefolded in _EXCEPTION_ATTRS_SET or attribute_casefolded in _EXCEPTION_OIDS_SET
 
 class LdapObfuscate:
 	@staticmethod

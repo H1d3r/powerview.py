@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 from .core import (
-	LdapParserException, Operators, LdapToken, 
-	AttributeParser, DNParser, FilterParser,
+	LdapParserException, Operators, LdapToken,
+	AttributeParser, DNParser, BaseFilterParser,
 	WILDCARD, ATTRIBUTE_OID, EXCEPTION_ATTRIBUTES
 )
 
@@ -14,12 +14,12 @@ from .strategies import (
 	equality_to_approximation_obfuscation, wildcard_expansion_obfuscation
 )
 
-class LdapParser(FilterParser):
+class FilterParser(BaseFilterParser):
 	"""
-	Extended LDAP Filter Parser with modular obfuscation strategies.
-	Maintains backward compatibility while providing new modular approach.
+	LDAP Filter Parser with modular obfuscation strategies.
+	Extends BaseFilterParser (tokenizer + AST builder) with strategy methods.
 	"""
-	
+
 	def random_casing(self, parsed_structure=None, probability=0.7):
 		"""Random case obfuscation with type awareness"""
 		if parsed_structure is None:
@@ -60,7 +60,7 @@ class LdapParser(FilterParser):
 		"""Convert equality matches to approximation matches"""
 		if parsed_structure is None:
 			parsed_structure = self.parsed_structure
-		equality_to_approximation_obfuscation(parsed_structure)
+		equality_to_approximation_obfuscation(parsed_structure, self._apply_to_filter_leaves)
 
 	def wildcard_expansion_obfuscation(self, parsed_structure=None):
 		"""Safe wildcard expansion for broader matching"""
@@ -89,20 +89,15 @@ class LdapParser(FilterParser):
 		self.equality_to_approximation_obfuscation(parsed_structure)
 
 	def boolean_operator_obfuscation(self, parsed_structure=None):
-		"""
-		Boolean operator obfuscation.
-		"""
-		return NotImplementedError("Boolean operator obfuscation not yet implemented")
+		raise NotImplementedError("Boolean operator obfuscation not yet implemented")
 
 	def append_garbage(self, parsed_structure=None):
-		"""
-		Append garbage method.
-		"""
-		return NotImplementedError("Append garbage method not yet implemented")
+		raise NotImplementedError("Append garbage method not yet implemented")
 
-FilterParser = LdapParser
+# Backward compatibility alias
+LdapParser = FilterParser
 
 __all__ = [
 	'FilterParser', 'LdapParser', 'DNParser', 'AttributeParser', 'LdapObfuscate',
-	'LdapParserException', 'Operators', 'LdapToken', 'in_exception'
-] 
+	'BaseFilterParser', 'LdapParserException', 'Operators', 'LdapToken', 'in_exception'
+]

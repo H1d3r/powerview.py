@@ -93,7 +93,7 @@ class LOG:
     
     def setup_logger(self, level=logging.INFO):
         if level == DEBUG:
-            level == logging.DEBUG
+            level = logging.DEBUG
        
         logger = logging.getLogger()
         logger.setLevel(logging.DEBUG)

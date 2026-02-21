@@ -13,6 +13,7 @@ from powerview.utils.native import *
 from powerview.utils.formatter import FORMATTER
 from powerview.utils.completer import Completer
 from powerview.utils.connections import CONNECTION, ConnectionSetupError
+from powerview.lib.adws.error import ADWSError
 from powerview.utils.logging import LOG
 from powerview.utils.parsers import powerview_arg_parse, arg_parse
 from powerview.utils.shell import get_prompt
@@ -503,6 +504,8 @@ def main():
                             logging.error(str(e))
                         except ldap3.core.exceptions.LDAPAttributeError as e:
                             logging.error(str(e))
+                        except ADWSError as e:
+                            logging.error(f"[ADWS] {str(e)}")
                         except ldap3.core.exceptions.LDAPSocketSendError as e:
                             logging.error(str(e))
                             conn.reset_connection()

@@ -93,10 +93,11 @@ class DNParser:
 	def random_spacing(self):
 		self.enable_spacing = True
 
-class FilterParser:
+class BaseFilterParser:
 	"""
-	LDAP Filter Parser class to parse LDAP filters and obfuscate them
-	
+	Base LDAP Filter Parser — tokenizes and builds AST from LDAP filter strings.
+	Subclassed by FilterParser in obfuscate/__init__.py to add strategy methods.
+
 	Reference: https://i.blackhat.com/BH-US-24/Presentations/US24-Bohannon-MaLDAPtive-Diving-Deep-Into-LDAP-Wednesday.pdf
 	"""
 	TOKEN_PATTERNS = {

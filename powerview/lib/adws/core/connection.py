@@ -537,29 +537,35 @@ class Connection(object):
         try:
             server_address: tuple[str, int] = (self.host, self.port)
             resource = resource if resource is not None else self.resource
-            logging.debug(f"Connecting to {self.host} for {resource}")
+            logging.debug(f"[ADWS] Connecting to {self.host}:{self.port} for {resource}")
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect(server_address)
+            logging.debug(f"[ADWS] TCP connection established, starting NNS/NTLM authentication")
             self.nmf = NMFConnection(
                 self._create_NNS_from_auth(sock),
                 fqdn=self.host,
                 port=self.port
             )
             self.nmf.connect(f"Windows/{resource}")
+            logging.debug(f"[ADWS] NMF session established for {resource}")
             self.resource = resource
-            
+
             # Set connection state
             self.bound = True
             self.closed = False
-            
-            if get_info:
-                self.refresh_server_info()
-            return self.server, self
         except Exception as e:
-            # Connection failed
             self.bound = False
             self.closed = True
             raise ADWSError(f"Failed to connect: {str(e)}")
+
+        if get_info:
+            logging.debug(f"[ADWS] Fetching server info (DSA + schema)")
+            try:
+                self.refresh_server_info()
+                logging.debug(f"[ADWS] Server info loaded successfully")
+            except Exception as e:
+                logging.warning(f"[ADWS] Failed to load server info: {str(e)}. Connection is still usable.")
+        return self.server, self
 
     def reconnect(self, resource=None):
         """

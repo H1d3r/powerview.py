@@ -91,30 +91,36 @@ class CustomStandardExtendedOperations(StandardExtendedOperations):
 			
 			modified_filter = search_filter
 			modified_dn = search_base
-			
+			modified_attributes = attributes
+
 			if self.obfuscate:
 				parser = FilterParser(search_filter)
-				tokenized_filter = parser.parse()
-				
-				parser.oid_attribute_obfuscation(max_spaces=3, max_zeros=0, include_prefix=False) # have to set zeros to 0 and without prefix since ldap3 does not support it
+				parser.parse()
+
+				# OID: converts attr names to OID dotted notation + trailing spaces.
+				# max_zeros=0, include_prefix=False because ldap3 rejects OID zero-padding
+				# and the "oID." prefix. Only attr-to-OID conversion + spacing is effective.
+				parser.oid_attribute_obfuscation(max_spaces=3, max_zeros=0, include_prefix=False)
 				parser.random_casing(probability=0.7)
-				
+
 				parser.prepend_zeros_obfuscation(max_zeros=5)
 				parser.hex_value_obfuscation(probability=0.5)
 				parser.spacing_obfuscation(max_spaces=3)
-				
+
+				# NOTE: ~= (approximate match) changes query semantics — may return
+				# broader results than exact equality. This is intentional for evasion.
 				parser.equality_to_approximation_obfuscation()
 				parser.wildcard_expansion_obfuscation()
-				
+
 				parser.anr_attribute_obfuscation()
-				
+
 				parser.random_spacing()
-				
+
 				modified_filter = parser.convert_to_ldap()
 				logging.debug("[CustomStandardExtendedOperations] Modified Filter: {}".format(modified_filter))
 
 				dn_parser = DNParser(search_base)
-				tokenized_dn = dn_parser.parse()
+				dn_parser.parse()
 				dn_parser.dn_hex()
 				dn_parser.dn_randomcase()
 				dn_parser.random_spacing()
@@ -129,14 +135,14 @@ class CustomStandardExtendedOperations(StandardExtendedOperations):
 
 			if generator:
 				if self.use_adws:
-					results = list(adws_paged_search_generator(self._connection, modified_dn, modified_filter, search_scope, attributes, size_limit, time_limit, types_only, get_operational_attributes, controls, paged_size, paged_criticality))
+					results = list(adws_paged_search_generator(self._connection, modified_dn, modified_filter, search_scope, modified_attributes, size_limit, time_limit, types_only, get_operational_attributes, controls, paged_size, paged_criticality))
 				else:
 					results = list(paged_search_generator(self._connection,
 												modified_dn,
 												modified_filter,
 												search_scope,
 												dereference_aliases,
-												attributes,
+												modified_attributes,
 												size_limit,
 												time_limit,
 												types_only,
@@ -144,39 +150,14 @@ class CustomStandardExtendedOperations(StandardExtendedOperations):
 												controls,
 												paged_size,
 												paged_criticality))
-					
-				filtered_results = []
-				for entry in results:
-					if entry['type'] != 'searchResEntry':
-						continue
-					
-					if strip_entries:
-						strip_entry(entry)
-						
-					filtered_results.append(entry)
-					
-				if not no_vuln_check:
-					for entry in filtered_results:
-						if 'attributes' in entry:
-							vulnerabilities = self.vulnerability_detector.detect_vulnerabilities(entry['attributes'])
-							if vulnerabilities:
-								entry['attributes']['vulnerabilities'] = [self._format_vulnerability(v) for v in vulnerabilities]
-				
-				if not no_cache:
-					for entry in filtered_results:
-						if 'attributes' in entry and 'from_cache' in entry['attributes']:
-							del entry['attributes']['from_cache']
-					
-					self.storage.cache_results(search_base, search_filter, search_scope, attributes, host=self.server.host, results=filtered_results, raw=raw)
-				return filtered_results
 			else:
 				if self.use_adws:
 					results = list(adws_paged_search_accumulator(
 						self._connection,
-						search_base,
-						search_filter,
+						modified_dn,
+						modified_filter,
 						search_scope,
-						attributes,
+						modified_attributes,
 						size_limit,
 						time_limit,
 						types_only,
@@ -188,11 +169,11 @@ class CustomStandardExtendedOperations(StandardExtendedOperations):
 				else:
 					results = list(paged_search_accumulator(
 						self._connection,
-						search_base,
-						search_filter,
+						modified_dn,
+						modified_filter,
 						search_scope,
 						dereference_aliases,
-						attributes,
+						modified_attributes,
 						size_limit,
 						time_limit,
 						types_only,
@@ -201,31 +182,31 @@ class CustomStandardExtendedOperations(StandardExtendedOperations):
 						paged_size,
 						paged_criticality
 					))
-				
-				filtered_results = []
-				for entry in results:
-					if hasattr(entry, 'type') and entry['type'] != 'searchResEntry':
-						continue
-						
-					if strip_entries:
-						strip_entry(entry)
-						
-					filtered_results.append(entry)
-				
-				if not no_vuln_check:
-					for entry in filtered_results:
-						if 'attributes' in entry:
-							vulnerabilities = self.vulnerability_detector.detect_vulnerabilities(entry['attributes'])
-							if vulnerabilities:
-								entry['attributes']['vulnerabilities'] = [self._format_vulnerability(v) for v in vulnerabilities]
-				
-				if not no_cache:
-					for entry in filtered_results:
-						if 'attributes' in entry and 'from_cache' in entry['attributes']:
-							del entry['attributes']['from_cache']
-					
-					self.storage.cache_results(search_base, search_filter, search_scope, attributes, host=self.server.host, results=filtered_results, raw=raw)
-				return filtered_results
+
+			filtered_results = []
+			for entry in results:
+				if entry.get('type') != 'searchResEntry':
+					continue
+
+				if strip_entries:
+					strip_entry(entry)
+
+				filtered_results.append(entry)
+
+			if not no_vuln_check:
+				for entry in filtered_results:
+					if 'attributes' in entry:
+						vulnerabilities = self.vulnerability_detector.detect_vulnerabilities(entry['attributes'])
+						if vulnerabilities:
+							entry['attributes']['vulnerabilities'] = [self._format_vulnerability(v) for v in vulnerabilities]
+
+			if not no_cache:
+				for entry in filtered_results:
+					if 'attributes' in entry and 'from_cache' in entry['attributes']:
+						del entry['attributes']['from_cache']
+
+				self.storage.cache_results(search_base, search_filter, search_scope, attributes, host=self.server.host, results=filtered_results, raw=raw)
+			return filtered_results
 		finally:
 			if raw and original_formatter is not None and self.server:
 				self.server.custom_formatter = original_formatter

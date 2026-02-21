@@ -199,7 +199,7 @@ class FORMATTER:
         rows = []
         nested_list = False
         if not entries:
-            self.print_table(entries=rows, headers=headers)
+            logging.info("No results found")
             return
         if (hasattr(self.args, "select") and self.args.select) or (hasattr(self.args, "properties") and self.args.properties and not self.args.properties == ldap3.ALL_ATTRIBUTES):
             if self.args.select:
@@ -628,7 +628,8 @@ class FORMATTER:
             return ""
             
         # Limit list size if needed
-        if len(value_list) > self.config['max_list_items']:
+        original_count = len(value_list)
+        if original_count > self.config['max_list_items']:
             value_list = value_list[:self.config['max_list_items']]
             was_truncated = True
         else:
@@ -651,7 +652,7 @@ class FORMATTER:
         
         # Add truncation indicator if needed
         if was_truncated:
-            result += f"\n... (truncated, {len(value_list)} of {len(value_list)} items shown)"
+            result += f"\n... (truncated, {len(value_list)} of {original_count} items shown)"
             
         return result
 

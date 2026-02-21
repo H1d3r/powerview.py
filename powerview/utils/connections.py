@@ -1180,13 +1180,16 @@ class CONNECTION:
 		self.nameserver = nameserver
 
 	def who_am_i(self):
+		if hasattr(self, '_cached_whoami') and self._cached_whoami is not None:
+			return self._cached_whoami
 		try:
 			whoami = self.ldap_session.extend.standard.who_am_i()
 			if whoami:
 				whoami = whoami.split(":")[-1]
 		except Exception as e:
 			whoami = f"{self.get_domain()}\\{self.get_username()}"
-		return whoami if whoami else "ANONYMOUS"
+		self._cached_whoami = whoami if whoami else "ANONYMOUS"
+		return self._cached_whoami
 
 	def _extract_username_from_whoami(self):
 		"""Safely extract username from LDAP who_am_i response."""
@@ -1202,52 +1205,58 @@ class CONNECTION:
 
 	def reset_connection(self, max_retries=3):
 		"""
-		Reset and reconnect the LDAP connection using exponential backoff strategy
-		
+		Reset and reconnect the LDAP connection using exponential backoff strategy.
+		First tries rebind(), then falls back to a full fresh connection if the
+		socket/TLS state is corrupted (common with LDAPS).
+
 		Args:
 			max_retries (int): Maximum number of reconnection attempts
-			
+
 		Returns:
 			bool: True if reconnection successful, False otherwise
 		"""
+		self._cached_whoami = None
 		retry_count = 0
 		success = False
-		
+
 		while retry_count < max_retries and not success:
 			try:
 				if retry_count > 0:
 					backoff_time = (2 ** retry_count) + random.uniform(0, 1)
 					logging.info(f"LDAP reconnection attempt {retry_count+1}/{max_retries} after {backoff_time:.2f} seconds")
 					time.sleep(backoff_time)
-				
-				self.ldap_session.rebind()
-				
+
+				if retry_count == 0:
+					# First attempt: try lightweight rebind
+					self.ldap_session.rebind()
+				else:
+					# Subsequent attempts: full fresh connection (rebind already
+					# failed, so the socket/TLS state is likely corrupted)
+					logging.debug("Rebind failed, creating fresh connection")
+					try:
+						self.ldap_session.unbind()
+					except Exception:
+						pass
+					self.ldap_server, self.ldap_session = self.init_ldap_session()
+
 				if self.is_connection_alive():
 					logging.info("LDAP reconnection successful")
 					success = True
 				else:
-					logging.warning("LDAP connection not functional after rebind attempt")
+					logging.warning("LDAP connection not functional after reconnection attempt")
 					retry_count += 1
-				
-			except ldap3.core.exceptions.LDAPSocketOpenError as e:
-				logging.error(f"Socket open error during reconnection: {str(e)}")
-				retry_count += 1
-			except ldap3.core.exceptions.LDAPSessionTerminatedByServerError as e:
-				logging.error(f"Session terminated by server during reconnection: {str(e)}")
-				retry_count += 1
-			except ldap3.core.exceptions.LDAPSocketSendError as e:
-				logging.error(f"Socket send error during reconnection: {str(e)}")
-				retry_count += 1
-			except ldap3.core.exceptions.LDAPSocketReceiveError as e:
-				logging.error(f"Socket receive error during reconnection: {str(e)}")
-				retry_count += 1
-			except ldap3.core.exceptions.LDAPBindError as e:
-				logging.error(f"Bind error during reconnection: {str(e)}")
+
+			except (ldap3.core.exceptions.LDAPSocketOpenError,
+					ldap3.core.exceptions.LDAPSessionTerminatedByServerError,
+					ldap3.core.exceptions.LDAPSocketSendError,
+					ldap3.core.exceptions.LDAPSocketReceiveError,
+					ldap3.core.exceptions.LDAPBindError) as e:
+				logging.error(f"Reconnection error: {str(e)}")
 				retry_count += 1
 			except Exception as e:
 				logging.error(f"Unexpected error during reconnection: {str(e)}")
 				retry_count += 1
-		
+
 		if not success:
 			logging.error("Maximum LDAP reconnection attempts reached")
 
@@ -1288,6 +1297,7 @@ class CONNECTION:
 				pass
 
 	def init_ldap_session(self, ldap_address=None, use_ldap=False, use_gc_ldap=False, _retry_depth=0):
+		self._cached_whoami = None
 		if _retry_depth > 3:
 			raise ConnectionSetupError("Maximum LDAP session retry depth exceeded")
 		if self.targetDomain and self.targetDomain != self.domain and self.kdcHost:

@@ -8071,6 +8071,7 @@ displayName=New Group Policy Object
 				password=password,
 				authentication=ldap3.NTLM
 			)
+			self.conn._cached_whoami = None
 			logging.info(f"[Login-As] Successfully logged in as {self.conn.who_am_i()}")
 			# self._initialize_attributes_from_connection()
 			if username:

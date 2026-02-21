@@ -2,6 +2,7 @@ from .. import ENUMERATION
 from ldap3 import DSA, SCHEMA, ALL, BASE, SUBTREE, SEQUENCE_TYPES
 from ldap3.protocol.rfc4512 import SchemaInfo, DsaInfo
 from ldap3.protocol.formatters.standard import format_attribute_values
+import logging
 
 class Server(object):
     def __init__(self, host, ssl=False, port=9389, get_info=ALL, formatter=None, validator=None, resource=ENUMERATION):
@@ -23,7 +24,10 @@ class Server(object):
             if self.get_info in [DSA, ALL]:
                 self._get_dsa_info(connection)
             if self.get_info in [SCHEMA, ALL]:
-                self._get_schema_info(connection)
+                try:
+                    self._get_schema_info(connection)
+                except Exception as e:
+                    logging.warning(f"[ADWS] Schema fetch failed: {str(e)}. Attribute formatting may be limited.")
 
     def _get_dsa_info(self, connection):
         """

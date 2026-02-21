@@ -3,5 +3,5 @@
 from .constants import *
 from .exceptions import LdapParserException
 from .parsers import (
-	Operators, LdapToken, AttributeParser, DNParser, FilterParser
+	Operators, LdapToken, AttributeParser, DNParser, BaseFilterParser
 ) 
