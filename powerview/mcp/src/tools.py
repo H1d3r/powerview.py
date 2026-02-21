@@ -116,7 +116,7 @@ def setup_tools(mcp, powerview_instance):
 		spn: bool = False,
 		enabled: bool = False,
 		disabled: bool = False,
-		lockout: bool = False,
+		lockedout: bool = False,
 		ldapfilter: str = "",
 		searchbase: str = "",
 		no_cache: bool = False,
@@ -141,7 +141,7 @@ def setup_tools(mcp, powerview_instance):
 			spn: Filter for accounts with a Service Principal Name.
 			enabled: Filter for enabled accounts.
 			disabled: Filter for disabled accounts.
-			lockout: Filter for locked out accounts.
+			lockedout: Filter for locked out accounts.
 			ldapfilter: Custom LDAP filter string.
 			searchbase: Specify the search base DN.
 			no_cache: Bypass the cache and perform a live query.
@@ -166,7 +166,7 @@ def setup_tools(mcp, powerview_instance):
 				'spn': spn,
 				'enabled': enabled,
 				'disabled': disabled,
-				'lockout': lockout,
+				'lockedout': lockedout,
 				'ldapfilter': ldapfilter,
 				'searchbase': searchbase if searchbase else None,
 				'no_cache': no_cache,

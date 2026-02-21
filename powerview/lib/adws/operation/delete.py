@@ -10,6 +10,3 @@ def delete_operation(fqdn, dn):
     }
     request = LDAP_DELETE_FSTRING.format(**delete_vars)
     return request
-
-def delete_response_to_dict(response):
-    pass

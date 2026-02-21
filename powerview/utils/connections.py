@@ -46,7 +46,6 @@ import time
 import ldap3
 import logging
 import json
-import sys
 from struct import unpack
 import tempfile
 import os
@@ -55,6 +54,10 @@ import socket
 from ldap3.operation import bind
 from ldap3.core.results import RESULT_SUCCESS, RESULT_STRONGER_AUTH_REQUIRED
 import powerview.lib.adws as adws
+
+class ConnectionSetupError(Exception):
+	"""Raised when a connection cannot be established due to configuration or auth errors."""
+	pass
 
 class ConnectionPoolEntry:
 	"""Represents a single connection entry in the pool with metadata"""
@@ -413,7 +416,7 @@ class ConnectionPool:
 		
 		try:
 			self.shutdown()
-		except:
+		except Exception:
 			pass
 
 class SMBConnectionEntry(ConnectionPoolEntry):
@@ -607,6 +610,54 @@ class SMBConnectionPool(ConnectionPool):
 			return stats
 
 class CONNECTION:
+	@staticmethod
+	def _get_formatter():
+		return {
+			"sAMAccountType": LDAP.resolve_samaccounttype,
+			"lastLogon": LDAP.ldap2datetime,
+			"whenCreated": LDAP.resolve_generalized_time,
+			"whenChanged": LDAP.resolve_generalized_time,
+			"pwdLastSet": LDAP.ldap2datetime,
+			"badPasswordTime": LDAP.ldap2datetime,
+			"lastLogonTimestamp": LDAP.ldap2datetime,
+			"objectGUID": LDAP.bin_to_guid,
+			"objectSid": LDAP.bin_to_sid,
+			"securityIdentifier": LDAP.bin_to_sid,
+			"mS-DS-CreatorSID": LDAP.bin_to_sid,
+			"msDS-ManagedPassword": LDAP.formatGMSApass,
+			"msDS-GroupMSAMembership": LDAP.parseMSAMembership,
+			"pwdProperties": LDAP.resolve_pwdProperties,
+			"userAccountControl": LDAP.resolve_uac,
+			"msDS-SupportedEncryptionTypes": LDAP.resolve_enc_type,
+			"trustAttributes": TRUST.resolve_trustAttributes,
+			"trustType": TRUST.resolve_trustType,
+			"trustDirection": TRUST.resolve_trustDirection,
+			"msExchVersion": EXCHANGE.resolve_msExchVersion,
+			"msDS-AllowedToActOnBehalfOfOtherIdentity": LDAP.resolve_msDSAllowedToActOnBehalfOfOtherIdentity,
+			"msDS-TrustForestTrustInfo": LDAP.resolve_msDSTrustForestTrustInfo,
+			"pKIExpirationPeriod": LDAP.resolve_pKIExpirationPeriod,
+			"pKIOverlapPeriod": LDAP.resolve_pKIOverlapPeriod,
+			"msDS-DelegatedMSAState": LDAP.resolve_delegated_msa_state
+		}
+
+	def _resolve_protocol(self, tls):
+		"""Resolve protocol name, SSL flag, and port based on current protocol settings and TLS context.
+
+		Returns:
+			tuple: (proto_name, use_ssl, port)
+		"""
+		if tls:
+			if self.use_ldaps:
+				return "LDAPS", True, self.port or 636
+			elif self.use_gc_ldaps:
+				return "GCssl", True, self.port or 3269
+		else:
+			if self.use_gc:
+				return "GC", False, self.port or 3268
+			elif self.use_ldap:
+				return "LDAP", False, self.port or 389
+		return None, None, None
+
 	def __init__(self, args, get_alt_server_info=False):
 		self.args = args
 		self._connection_pool = ConnectionPool(
@@ -661,7 +712,7 @@ class CONNECTION:
 					pfx = f.read()
 			except FileNotFoundError as e:
 				logging.error(str(e))
-				sys.exit(0)
+				raise ConnectionSetupError(str(e))
 
 			try:
 				logging.debug("Loading certificate without password")
@@ -674,7 +725,7 @@ class CONNECTION:
 					self.key, self.cert = load_pfx(pfx, self.pfx_pass)
 			except Exception as e:
 				logging.error(f"Unknown error: {str(e)}")
-				sys.exit(0)
+				raise ConnectionSetupError(f"Failed to load certificate: {str(e)}")
 		
 		# auth method
 		self.auth_method = ldap3.NTLM
@@ -691,8 +742,8 @@ class CONNECTION:
 		if is_valid_fqdn(args.ldap_address) and not self.use_kerberos:
 			_ldap_address = host2ip(args.ldap_address, nameserver=self.nameserver, dns_timeout=5, use_system_ns = self.use_system_ns)
 			if not _ldap_address:
-				logging.error("Couldn't resolve %s" % args.ldap_address)
-				sys.exit(0)
+				logging.error(f"Couldn't resolve {args.ldap_address}")
+				raise ConnectionSetupError(f"Couldn't resolve {args.ldap_address}")
 			self.targetIp = _ldap_address
 			self.ldap_address = _ldap_address
 			args.ldap_address = _ldap_address
@@ -764,14 +815,14 @@ class CONNECTION:
 		if self.use_sign_and_seal and self.use_ldaps:
 			if self.args.use_ldaps:
 				logging.error('Sign and seal not supported with LDAPS')
-				sys.exit(-1)
+				raise ConnectionSetupError('Sign and seal not supported with LDAPS')
 			logging.warning('Sign and seal not supported with LDAPS. Falling back to LDAP')
 			self.use_ldap = True
 			self.use_ldaps = False
 		elif self.use_channel_binding and self.use_ldap:
 			if self.args.use_ldap:
 				logging.error('TLS channel binding not supported with LDAP')
-				sys.exit(-1)
+				raise ConnectionSetupError('TLS channel binding not supported with LDAP')
 			logging.warning('Channel binding not supported with LDAP. Proceed with LDAPS')
 			self.use_ldaps = True
 			self.use_ldap = False
@@ -960,7 +1011,7 @@ class CONNECTION:
 	def refresh_domain(self):
 		try:
 			self.domain = dn2domain(self.ldap_server.info.other.get('defaultNamingContext')[0])
-		except:
+		except Exception:
 			pass
 
 	def set_flatname(self, flatname):
@@ -1101,31 +1152,21 @@ class CONNECTION:
 		return self.proto
 
 	def set_proto(self, proto):
+		self.use_ldaps = False
+		self.use_ldap = False
+		self.use_gc_ldaps = False
+		self.use_gc = False
+		self.use_adws = False
+
 		if proto.lower() == "ldaps":
 			self.use_ldaps = True
-			self.use_ldap = False
-			self.use_gc_ldaps = False
-			self.use_gc = False
 		elif proto.lower() == "ldap":
-			self.use_ldaps = False
 			self.use_ldap = True
-			self.use_gc_ldaps = False
-			self.use_gc = False
 		elif proto.lower() == "gc":
-			self.use_ldaps = False
-			self.use_ldap = False
-			self.use_gc_ldaps = False
 			self.use_gc = True
 		elif proto.lower() == "gc_ldaps":
-			self.use_ldaps = False
-			self.use_ldap = False
 			self.use_gc_ldaps = True
-			self.use_gc = False
 		elif proto.lower() == "adws":
-			self.use_ldaps = False
-			self.use_ldap = False
-			self.use_gc_ldaps = False
-			self.use_gc = False
 			self.use_adws = True
 		else:
 			raise ValueError(f"Invalid protocol: {proto}")
@@ -1144,8 +1185,20 @@ class CONNECTION:
 			if whoami:
 				whoami = whoami.split(":")[-1]
 		except Exception as e:
-			whoami = "%s\\%s" % (self.get_domain(), self.get_username())
+			whoami = f"{self.get_domain()}\\{self.get_username()}"
 		return whoami if whoami else "ANONYMOUS"
+
+	def _extract_username_from_whoami(self):
+		"""Safely extract username from LDAP who_am_i response."""
+		try:
+			whoami = self.ldap_session.extend.standard.who_am_i()
+			if whoami and "\\" in whoami:
+				return whoami.split("\\")[1]
+			elif whoami and ":" in whoami:
+				return whoami.split(":")[-1]
+			return whoami or self.username
+		except Exception:
+			return self.username
 
 	def reset_connection(self, max_retries=3):
 		"""
@@ -1197,39 +1250,46 @@ class CONNECTION:
 		
 		if not success:
 			logging.error("Maximum LDAP reconnection attempts reached")
-			sys.exit(0)
-		
+
 		return success
 
 	def close(self):
 		"""Close all connections and resources properly"""
 		self._connection_pool.shutdown()
-		
+
 		if hasattr(self, '_smb_pool'):
 			self._smb_pool.shutdown()
+
+		for f in getattr(self, '_temp_cert_files', []):
+			try:
+				os.unlink(f)
+			except OSError:
+				pass
 
 		if hasattr(self, 'ldap_session') and self.ldap_session:
 			try:
 				if self.ldap_session.bound:
 					self.ldap_session.unbind()
 				self.ldap_session = None
-			except:
+			except Exception:
 				pass
-		
+
 		if hasattr(self, 'relay_instance') and self.relay_instance:
 			try:
 				self.relay_instance.shutdown()
 				del self.relay_instance
 			except Exception as e:
 				logging.error(f"Error shutting down relay server: {str(e)}")
-		
+
 		if hasattr(self, 'rpc_conn') and self.rpc_conn:
 			try:
 				self.rpc_conn.disconnect()
-			except:
+			except Exception:
 				pass
 
-	def init_ldap_session(self, ldap_address=None, use_ldap=False, use_gc_ldap=False):
+	def init_ldap_session(self, ldap_address=None, use_ldap=False, use_gc_ldap=False, _retry_depth=0):
+		if _retry_depth > 3:
+			raise ConnectionSetupError("Maximum LDAP session retry depth exceeded")
 		if self.targetDomain and self.targetDomain != self.domain and self.kdcHost:
 			self.kdcHost = None
 
@@ -1263,8 +1323,8 @@ class CONNECTION:
 					target = self.ldap_address
 
 			if not is_valid_fqdn(target):
-				logging.error("Keberos authentication requires FQDN instead of IP")
-				sys.exit(0)
+				logging.error("Kerberos authentication requires FQDN instead of IP")
+				raise ConnectionSetupError("Kerberos authentication requires FQDN instead of IP")
 		else:
 			if ldap_address:
 				if is_valid_fqdn(ldap_address):
@@ -1285,7 +1345,7 @@ class CONNECTION:
 				key_file.close()
 			except AttributeError as e:
 				logging.error("Not a valid key file")
-				sys.exit(0)
+				raise ConnectionSetupError("Not a valid key file")
 
 			try:
 				cert_file = tempfile.NamedTemporaryFile(delete=False)
@@ -1293,8 +1353,10 @@ class CONNECTION:
 				cert_file.close()
 			except AttributeError as e:
 				logging.error(str(e))
-				sys.exit(0)
-			
+				os.unlink(key_file.name)
+				raise ConnectionSetupError(f"Not a valid certificate file: {str(e)}")
+
+			self._temp_cert_files = [key_file.name, cert_file.name]
 			logging.debug(f"Key File: {key_file.name}")
 			logging.debug(f"Cert File: {cert_file.name}")
 			tls = ldap3.Tls(
@@ -1306,14 +1368,14 @@ class CONNECTION:
 					ssl_options=[ssl.OP_ALL],
 				)
 			self.ldap_server, self.ldap_session = self.init_ldap_schannel_connection(target, tls)
-			self.username = self.ldap_session.extend.standard.who_am_i().split("\\")[1]
+			self.username = self._extract_username_from_whoami()
 			self.domain = dn2domain(self.ldap_server.info.other["defaultNamingContext"][0])
 			return self.ldap_server, self.ldap_session
 
 		_anonymous = False
-		if not self.username and (not self.password or not self.nthash or not self.lmhash) and not self.use_kerberos:
+		if not self.username and not self.password and not self.nthash and not self.lmhash and not self.use_kerberos:
 			if self.relay:
-				target = "ldaps://%s" % (self.ldap_address) if self.use_ldaps else "ldap://%s" % (self.ldap_address)
+				target = f"ldaps://{self.ldap_address}" if self.use_ldaps else f"ldap://{self.ldap_address}"
 				logging.info(f"[Relay] Targeting {target}")
 
 				try:
@@ -1324,7 +1386,7 @@ class CONNECTION:
 					if "Permission denied" in str(e):
 						logging.error(f"[Relay] Permission denied when setting up relay server on port {self.relay_port}.")
 						logging.error(f"[Relay] Try running with sudo or using a port above 1024 with --relay-port option.")
-						sys.exit(1)
+						raise ConnectionSetupError(f"Permission denied for relay server on port {self.relay_port}")
 					else:
 						# Re-raise any other permission errors
 						raise
@@ -1335,7 +1397,7 @@ class CONNECTION:
 
 				# setting back to default
 				self.relay = False
-				self.username = self.ldap_session.extend.standard.who_am_i().split("\\")[1]
+				self.username = self._extract_username_from_whoami()
 				self.domain = dn2domain(self.ldap_server.info.other["defaultNamingContext"][0])
 				return self.ldap_server, self.ldap_session
 			else:
@@ -1362,7 +1424,7 @@ class CONNECTION:
 				# check if domain is empty
 				if not self.domain or not is_valid_fqdn(self.domain):
 					self.refresh_domain()
-				self.username = self.ldap_session.extend.standard.who_am_i().split("\\")[1]
+				self.username = self._extract_username_from_whoami()
 				self.domain = dn2domain(self.ldap_server.info.other["defaultNamingContext"][0])
 				return self.ldap_server, self.ldap_session
 			except (ldap3.core.exceptions.LDAPSocketOpenError, ConnectionResetError):
@@ -1376,17 +1438,17 @@ class CONNECTION:
 						self.ldap_server, self.ldap_session = self.init_ldap_anonymous(target, tls)
 					else:
 						self.ldap_server, self.ldap_session = self.init_ldap_connection(target, tls, self.domain, self.username, self.password, self.lmhash, self.nthash, auth_aes_key=self.auth_aes_key, auth_method=self.auth_method)
-					self.username = self.ldap_session.extend.standard.who_am_i().split("\\")[1]
+					self.username = self._extract_username_from_whoami()
 					self.domain = dn2domain(self.ldap_server.info.other["defaultNamingContext"][0])
 					return self.ldap_server, self.ldap_session
-				except:
+				except Exception:
 					if self.use_ldaps:
 						logging.debug('Error bind to LDAPS, trying LDAP')
 						self.set_proto("ldap")
 					elif self.use_gc_ldaps:
 						logging.debug('Error bind to GC ssl, trying GC')
 						self.set_proto("gc")
-					return self.init_ldap_session()
+					return self.init_ldap_session(_retry_depth=_retry_depth + 1)
 		elif self.use_adws:
 			self.ldap_server, self.ldap_session = self.init_adws_session()
 			return self.ldap_server, self.ldap_session
@@ -1397,14 +1459,14 @@ class CONNECTION:
 				self.ldap_server, self.ldap_session = self.init_ldap_kerberos(target, None, self.domain, self.username, self.password, self.lmhash, self.nthash, self.auth_aes_key, self.kdcHost, seal_and_sign=self.use_sign_and_seal)
 			else:
 				self.ldap_server, self.ldap_session = self.init_ldap_connection(target, None, self.domain, self.username, self.password, self.lmhash, self.nthash, auth_aes_key=self.auth_aes_key, auth_method=self.auth_method)
-			self.username = self.ldap_session.extend.standard.who_am_i().split("\\")[1]
+			self.username = self._extract_username_from_whoami()
 			self.domain = dn2domain(self.ldap_server.info.other["defaultNamingContext"][0])
 			return self.ldap_server, self.ldap_session
 
 	def init_adws_session(self):
 		if self.auth_method != ldap3.NTLM:
 			logging.error("ADWS protocol only supports NTLM authentication as of now")
-			sys.exit(0)
+			raise ConnectionSetupError("ADWS protocol only supports NTLM authentication")
 
 		target = self.ldap_address
 		self.ldap_server, self.ldap_session = self.init_adws_connection(target, self.domain, self.username, self.password, self.lmhash, self.nthash)
@@ -1414,67 +1476,29 @@ class CONNECTION:
 		ldap_server_kwargs = {
 			"host": target,
 			"get_info": ldap3.ALL,
-			"formatter": {
-				"sAMAccountType": LDAP.resolve_samaccounttype,
-				"lastLogon": LDAP.ldap2datetime,
-				"whenCreated": LDAP.resolve_generalized_time,
-				"whenChanged": LDAP.resolve_generalized_time,
-				"pwdLastSet": LDAP.ldap2datetime,
-				"badPasswordTime": LDAP.ldap2datetime,
-				"lastLogonTimestamp": LDAP.ldap2datetime,
-				"objectGUID": LDAP.bin_to_guid,
-				"objectSid": LDAP.bin_to_sid,
-				"securityIdentifier": LDAP.bin_to_sid,
-				"mS-DS-CreatorSID": LDAP.bin_to_sid,
-				"msDS-ManagedPassword": LDAP.formatGMSApass,
-				"pwdProperties": LDAP.resolve_pwdProperties,
-				"userAccountControl": LDAP.resolve_uac,
-				"msDS-SupportedEncryptionTypes": LDAP.resolve_enc_type,
-				"trustAttributes": TRUST.resolve_trustAttributes,
-				"trustType": TRUST.resolve_trustType,
-				"trustDirection": TRUST.resolve_trustDirection,
-				"msExchVersion": EXCHANGE.resolve_msExchVersion,
-				"msDS-AllowedToActOnBehalfOfOtherIdentity": LDAP.resolve_msDSAllowedToActOnBehalfOfOtherIdentity,
-				"msDS-TrustForestTrustInfo": LDAP.resolve_msDSTrustForestTrustInfo,
-				"pKIExpirationPeriod": LDAP.resolve_pKIExpirationPeriod,
-				"pKIOverlapPeriod": LDAP.resolve_pKIOverlapPeriod,
-				"msDS-DelegatedMSAState": LDAP.resolve_delegated_msa_state
-			}
+			"formatter": self._get_formatter()
 		}
 
-		if tls:
-			if self.use_ldaps:
-				self.proto = "LDAPS"
-				ldap_server_kwargs["use_ssl"] = True
-				ldap_server_kwargs["port"] = 636
-			elif self.use_gc_ldaps:
-				self.proto = "GCssl"
-				ldap_server_kwargs["use_ssl"] = True
-				ldap_server_kwargs["port"] = 3269
-		else:
-			if self.use_gc:
-				self.proto = "GC"
-				ldap_server_kwargs["use_ssl"] = False
-				ldap_server_kwargs["port"] = 3268
-			elif self.use_ldap:
-				self.proto = "LDAP"
-				ldap_server_kwargs["use_ssl"] = False
-				ldap_server_kwargs["port"] = 389
+		proto, use_ssl, port = self._resolve_protocol(tls)
+		if proto:
+			self.proto = proto
+			ldap_server_kwargs["use_ssl"] = use_ssl
+			ldap_server_kwargs["port"] = port
 
-		logging.debug(f"Connecting as ANONYMOUS to %s, Port: %s, SSL: %s" % (ldap_server_kwargs["host"], ldap_server_kwargs["port"], ldap_server_kwargs["use_ssl"]))
+		logging.debug(f"Connecting as ANONYMOUS to {ldap_server_kwargs['host']}, Port: {ldap_server_kwargs.get('port')}, SSL: {ldap_server_kwargs.get('use_ssl')}")
 		self.ldap_server = ldap3.Server(**ldap_server_kwargs)
 		self.ldap_session = ldap3.Connection(self.ldap_server)
 
 		if not self.ldap_session.bind():
 			logging.info(f"Error binding to {self.proto}")
-			sys.exit(0)
+			raise ConnectionSetupError(f"Error binding to {self.proto}")
 
 		base_dn = self.ldap_server.info.other['defaultNamingContext'][0]
 		self.domain = dn2domain(self.ldap_server.info.other['defaultNamingContext'][0])
 		if not self.ldap_session.search(base_dn,'(objectclass=*)'):
-			logging.warning("ANONYMOUS access not allowed for %s" % (self.domain))
-			print(self.ldap_server.info)
-			sys.exit(0)
+			logging.warning(f"ANONYMOUS access not allowed for {self.domain}")
+			logging.debug(self.ldap_server.info)
+			raise ConnectionSetupError(f"ANONYMOUS access not allowed for {self.domain}")
 		else:
 			logging.info("Server allows ANONYMOUS access!")
 			
@@ -1490,7 +1514,7 @@ class CONNECTION:
 		from impacket.krb5.types import Principal
 		from impacket.krb5 import constants
 
-		logging.debug('Patching principal to {}'.format(principal))
+		logging.debug(f'Patching principal to {principal}')
 
 		from pyasn1.codec.der import decoder, encoder
 		from impacket.krb5.asn1 import TGS_REP, Ticket
@@ -1510,7 +1534,9 @@ class CONNECTION:
 
 		return new_creds
 
-	def init_ldap_kerberos(self, target, tls=None, domain=None, username=None, password=None, lmhash=None, nthash=None, aesKey=None, kdcHost=None, seal_and_sign=False, channel_binding=False):
+	def init_ldap_kerberos(self, target, tls=None, domain=None, username=None, password=None, lmhash=None, nthash=None, aesKey=None, kdcHost=None, seal_and_sign=False, channel_binding=False, _retry_depth=0):
+		if _retry_depth > 3:
+			raise ConnectionSetupError("Maximum Kerberos LDAP retry depth exceeded")
 		from impacket.krb5.ccache import CCache
 		from impacket.krb5.kerberosv5 import getKerberosTGT, getKerberosTGS
 		from impacket.krb5.types import Principal
@@ -1521,56 +1547,17 @@ class CONNECTION:
 			"use_ssl": True if self.use_gc_ldaps or self.use_ldaps else False,
 			"tls": tls,
 			"port": self.port,
-			"formatter": {
-				"sAMAccountType": LDAP.resolve_samaccounttype,
-				"lastLogon": LDAP.ldap2datetime,
-				"whenCreated": LDAP.resolve_generalized_time,
-				"whenChanged": LDAP.resolve_generalized_time,
-				"pwdLastSet": LDAP.ldap2datetime,
-				"badPasswordTime": LDAP.ldap2datetime,
-				"lastLogonTimestamp": LDAP.ldap2datetime,
-				"objectGUID": LDAP.bin_to_guid,
-				"objectSid": LDAP.bin_to_sid,
-				"securityIdentifier": LDAP.bin_to_sid,
-				"mS-DS-CreatorSID": LDAP.bin_to_sid,
-				"msDS-ManagedPassword": LDAP.formatGMSApass,
-				"msDS-GroupMSAMembership": LDAP.parseMSAMembership,
-				"pwdProperties": LDAP.resolve_pwdProperties,
-				"userAccountControl": LDAP.resolve_uac,
-				"msDS-SupportedEncryptionTypes": LDAP.resolve_enc_type,
-				"trustAttributes": TRUST.resolve_trustAttributes,
-				"trustType": TRUST.resolve_trustType,
-				"trustDirection": TRUST.resolve_trustDirection,
-				"msExchVersion": EXCHANGE.resolve_msExchVersion,
-				"msDS-AllowedToActOnBehalfOfOtherIdentity": LDAP.resolve_msDSAllowedToActOnBehalfOfOtherIdentity,
-				"msDS-TrustForestTrustInfo": LDAP.resolve_msDSTrustForestTrustInfo,
-				"pKIExpirationPeriod": LDAP.resolve_pKIExpirationPeriod,
-				"pKIOverlapPeriod": LDAP.resolve_pKIOverlapPeriod,
-				"msDS-DelegatedMSAState": LDAP.resolve_delegated_msa_state
-			}
+			"formatter": self._get_formatter()
 		}
 
-		if tls:
-			if self.use_ldaps:
-				self.proto = "LDAPS"
-				ldap_server_kwargs["use_ssl"] = True
-				ldap_server_kwargs["port"] = 636 if not self.port else self.port
-			elif self.use_gc_ldaps:
-				self.proto = "GCssl"
-				ldap_server_kwargs["use_ssl"] = True
-				ldap_server_kwargs["port"] = 3269 if not self.port else self.port
-		else:
-			if self.use_gc:
-				self.proto = "GC"
-				ldap_server_kwargs["use_ssl"] = False
-				ldap_server_kwargs["port"] = 3268 if not self.port else self.port
-			elif self.use_ldap:
-				self.proto = "LDAP"
-				ldap_server_kwargs["use_ssl"] = False
-				ldap_server_kwargs["port"] = 389 if not self.port else self.port
+		proto, use_ssl, port = self._resolve_protocol(tls)
+		if proto:
+			self.proto = proto
+			ldap_server_kwargs["use_ssl"] = use_ssl
+			ldap_server_kwargs["port"] = port
 
 		ldap_server = ldap3.Server(**ldap_server_kwargs)
-		
+
 		ccache = None
 		try:
 			ccache_name = os.getenv('KRB5CCNAME')
@@ -1583,16 +1570,16 @@ class CONNECTION:
 			if username is None or username == '':
 				username = ccache.principal.components[0]['data'].decode('utf-8')
 
-			krbtgt_principal = 'krbtgt/%s@%s' % (domain.upper(), domain.upper())
-			ldap_principal = 'ldap/%s@%s' % (target.lower(), domain.upper())
+			krbtgt_principal = f'krbtgt/{domain.upper()}@{domain.upper()}'
+			ldap_principal = f'ldap/{target.lower()}@{domain.upper()}'
 			krbtgt_creds = ccache.getCredential(krbtgt_principal, anySPN=True)
 			ldap_creds = ccache.getCredential(ldap_principal, anySPN=True)
 			if krbtgt_creds is not None:
 				self.TGT = krbtgt_creds.toTGT()
-				logging.debug("Found TGT for %s in KRB5CCNAME, using as TGT" % krbtgt_principal)
+				logging.debug(f"Found TGT for {krbtgt_principal} in KRB5CCNAME, using as TGT")
 			elif ldap_creds is not None:
 				self.TGS = ldap_creds.toTGS(ldap_principal)
-				logging.debug("Found TGS for %s in KRB5CCNAME, using as TGS" % ldap_principal)
+				logging.debug(f"Found TGS for {ldap_principal} in KRB5CCNAME, using as TGS")
 			else:
 				logging.debug("No TGT or TGS found in KRB5CCNAME")
 		except FileNotFoundError as e:
@@ -1629,7 +1616,7 @@ class CONNECTION:
 				}
 			
 			if self.TGT is not None and self.TGS is None:
-				serverName = Principal('ldap/%s' % target.lower(), type=constants.PrincipalNameType.NT_SRV_INST.value)
+				serverName = Principal(f'ldap/{target.lower()}', type=constants.PrincipalNameType.NT_SRV_INST.value)
 				tgs, cipher, oldSessionKey, sessionKey = getKerberosTGS(serverName, domain, kdcHost, self.TGT['KDC_REP'], self.TGT['cipher'], self.TGT['sessionKey'])
 				self.TGS = {
 					'KDC_REP': tgs,
@@ -1647,7 +1634,7 @@ class CONNECTION:
 			elif self.TGS and hasattr(self.TGS, 'oldSessionKey') and hasattr(self.TGS, 'sessionKey'):
 				ccache.fromTGS(self.TGS['KDC_REP'], self.TGS['oldSessionKey'], self.TGS['sessionKey'])
 
-		principal = 'ldap/{}@{}'.format(target.lower(), domain.upper())
+		principal = f'ldap/{target.lower()}@{domain.upper()}'
 		creds = ccache.getCredential(principal, anySPN=False)
 		if creds:
 			creds_server_lower = creds['server'].prettyPrint().lower().decode('utf-8')
@@ -1659,12 +1646,12 @@ class CONNECTION:
 				ccache.credentials.append(new_creds)
 				temp_ccache = tempfile.NamedTemporaryFile()
 				ccache.saveFile(temp_ccache.name)
-				cred_store = {'ccache': 'FILE:{}'.format(temp_ccache.name)}
+				cred_store = {'ccache': f'FILE:{temp_ccache.name}'}
 			else:
 				logging.debug('SPN is good, no patching needed')
 				temp_ccache = tempfile.NamedTemporaryFile()
 				ccache.saveFile(temp_ccache.name)
-				cred_store = {'ccache': 'FILE:{}'.format(temp_ccache.name)}
+				cred_store = {'ccache': f'FILE:{temp_ccache.name}'}
 		else:
 			logging.debug('TGS not found in KRB5CCNAME, looking for '
 					'TGS with alternative SPN')
@@ -1675,13 +1662,13 @@ class CONNECTION:
 				ccache.credentials.append(new_creds)
 				temp_ccache = tempfile.NamedTemporaryFile()
 				ccache.saveFile(temp_ccache.name)
-				cred_store = {'ccache': 'FILE:{}'.format(temp_ccache.name)}
+				cred_store = {'ccache': f'FILE:{temp_ccache.name}'}
 			else:
 				temp_ccache = tempfile.NamedTemporaryFile()
 				ccache.saveFile(temp_ccache.name)
-				cred_store = {'ccache': 'FILE:{}'.format(temp_ccache.name)}
-		logging.debug('LDAP binding parameters: server = {0} / user = {1} '
-			   '/ Kerberos auth'.format(target, username))
+				cred_store = {'ccache': f'FILE:{temp_ccache.name}'}
+		logging.debug(f'LDAP binding parameters: server = {target} / user = {username} '
+			   '/ Kerberos auth')
 
 		ldap_connection_kwargs = {
 			"server": ldap_server,
@@ -1695,12 +1682,12 @@ class CONNECTION:
 		if seal_and_sign or self.use_sign_and_seal:
 			if not self.sign_and_seal_supported:
 				logging.warning("LDAP sign and seal is not supported")
-				sys.exit(-1)
+				raise ConnectionSetupError("LDAP sign and seal is not supported")
 			ldap_connection_kwargs["session_security"] = ldap3.ENCRYPT
 		if channel_binding or self.use_channel_binding:
 			if not self.tls_channel_binding_supported:
 				logging.warning("TLS channel binding is not supported")
-				sys.exit(-1)
+				raise ConnectionSetupError("TLS channel binding is not supported")
 			ldap_connection_kwargs["channel_binding"] = ldap3.TLS_CHANNEL_BINDING
 
 		try:
@@ -1712,9 +1699,9 @@ class CONNECTION:
 		except ldap3.core.exceptions.LDAPSocketOpenError as e:
 				logging.critical(e)
 				if self._do_tls:
-					logging.critical('TLS negociation failed, this error is mostly due to your host '
+					logging.critical('TLS negotiation failed, this error is mostly due to your host '
 										  'not supporting SHA1 as signing algorithm for certificates')
-				sys.exit(-1)
+				raise ConnectionSetupError(f"LDAP socket open error: {str(e)}")
 		except ldap3.core.exceptions.LDAPStrongerAuthRequiredResult:
 			logging.warning("Server returns LDAPStrongerAuthRequiredResult")
 			if not self.sign_and_seal_supported:
@@ -1724,10 +1711,10 @@ class CONNECTION:
 					version=ssl.PROTOCOL_TLSv1_2,
 					ciphers='ALL:@SECLEVEL=0',
 				)
-				return self.init_ldap_kerberos(target, tls=tls, domain=domain, username=username, password=password, lmhash=lmhash, nthash=nthash, aesKey=aesKey, seal_and_sign=False)
+				return self.init_ldap_kerberos(target, tls=tls, domain=domain, username=username, password=password, lmhash=lmhash, nthash=nthash, aesKey=aesKey, seal_and_sign=False, _retry_depth=_retry_depth + 1)
 			else:
 				logging.warning("Falling back to Kerberos sealing")
-				return self.init_ldap_kerberos(target, tls=tls, domain=domain, username=username, password=password, lmhash=lmhash, nthash=nthash, aesKey=aesKey, seal_and_sign=True)
+				return self.init_ldap_kerberos(target, tls=tls, domain=domain, username=username, password=password, lmhash=lmhash, nthash=nthash, aesKey=aesKey, seal_and_sign=True, _retry_depth=_retry_depth + 1)
 		except ldap3.core.exceptions.LDAPAuthMethodNotSupportedResult:
 			logging.warning("Server returns LDAPAuthMethodNotSupportedResult.")
 			if is_proxychains():
@@ -1738,17 +1725,15 @@ class CONNECTION:
 		except Exception as e:
 			if self.stack_trace:
 				raise e
-			logging.warning("Unknown error: {0}. Falling back to impacket style kerberos login".format(e))
+			logging.warning(f"Unknown error: {e}. Falling back to impacket style kerberos login")
 			self.impacket_ldap3_kerberos_login(ldap_connection, target, username, password, domain, lmhash, nthash, aesKey, kdcHost=kdcHost, useCache=self.no_pass)
 
 		return ldap_server, ldap_connection
 
 	def impacket_ldap3_kerberos_login(self, connection, target, user, password, domain='', lmhash='', nthash='', aesKey='', kdcHost=None, TGT=None, TGS=None, useCache=True):
-		from pyasn1.codec.ber import encoder, decoder
-		from pyasn1.type.univ import noValue
-		from binascii import hexlify, unhexlify
 		"""
-		logins into the target system explicitly using Kerberos. Hashes are used if RC4_HMAC is supported.
+		Login to the target system explicitly using Kerberos. Hashes are used if RC4_HMAC is supported.
+
 		:param string user: username
 		:param string password: password for the user
 		:param string domain: domain where the account is valid for (required)
@@ -1761,6 +1746,9 @@ class CONNECTION:
 		:param bool useCache: whether or not we should use the ccache for credentials lookup. If TGT or TGS are specified this is False
 		:return: True, raises an Exception if error.
 		"""
+		from pyasn1.codec.ber import encoder, decoder
+		from pyasn1.type.univ import noValue
+		from binascii import hexlify, unhexlify
 
 		if lmhash != '' or nthash != '':
 			if len(lmhash) % 2:
@@ -1789,7 +1777,7 @@ class CONNECTION:
 				env_krb5ccname = os.getenv('KRB5CCNAME')
 				if not env_krb5ccname:
 					logging.error("No KRB5CCNAME environment present.")
-					sys.exit(0)
+					raise ConnectionSetupError("No KRB5CCNAME environment present")
 				ccache = CCache.loadFile(env_krb5ccname)
 			except Exception as e:
 				# No cache present
@@ -1799,15 +1787,15 @@ class CONNECTION:
 				# retrieve domain information from CCache file if needed
 				if domain == '':
 					domain = ccache.principal.realm['data'].decode('utf-8')
-					logging.debug('Domain retrieved from CCache: %s' % domain)
+					logging.debug(f'Domain retrieved from CCache: {domain}')
 
-				logging.debug('Using Kerberos Cache: %s' % os.getenv('KRB5CCNAME'))
-				principal = 'ldap/%s@%s' % (target.upper(), domain.upper())
+				logging.debug(f'Using Kerberos Cache: {os.getenv("KRB5CCNAME")}')
+				principal = f'ldap/{target.upper()}@{domain.upper()}'
 
 				creds = ccache.getCredential(principal)
 				if creds is None:
 					# Let's try for the TGT and go from there
-					principal = 'krbtgt/%s@%s' % (domain.upper(), domain.upper())
+					principal = f'krbtgt/{domain.upper()}@{domain.upper()}'
 					creds = ccache.getCredential(principal)
 					if creds is not None:
 						self.TGT = creds.toTGT()
@@ -1821,10 +1809,10 @@ class CONNECTION:
 				# retrieve user information from CCache file if needed
 				if user == '' and creds is not None:
 					user = creds['client'].prettyPrint().split(b'@')[0].decode('utf-8')
-					logging.debug('Username retrieved from CCache: %s' % user)
+					logging.debug(f'Username retrieved from CCache: {user}')
 				elif user == '' and len(ccache.principal.components) > 0:
 					user = ccache.principal.components[0]['data'].decode('utf-8')
-					logging.debug('Username retrieved from CCache: %s' % user)
+					logging.debug(f'Username retrieved from CCache: {user}')
 
 		# First of all, we need to get a TGT for the user
 		userName = Principal(user, type=constants.PrincipalNameType.NT_PRINCIPAL.value)
@@ -1843,7 +1831,7 @@ class CONNECTION:
 
 		if not self.TGS:
 			self.TGS = dict()
-			serverName = Principal('ldap/%s' % target, type=constants.PrincipalNameType.NT_SRV_INST.value)
+			serverName = Principal(f'ldap/{target}', type=constants.PrincipalNameType.NT_SRV_INST.value)
 			tgs, cipher, oldSessionKey, sessionKey = getKerberosTGS(serverName, domain, kdcHost, tgt, cipher, sessionKey)
 			self.TGS['KDC_REP'] = tgs
 			self.TGS['cipher'] = cipher
@@ -1917,53 +1905,26 @@ class CONNECTION:
 
 		return True
 
-	def init_ldap_schannel_connection(self, target, tls, seal_and_sign=False, tls_channel_binding=False):
+	def init_ldap_schannel_connection(self, target, tls, seal_and_sign=False, tls_channel_binding=False, _retry_depth=0):
+		if _retry_depth > 3:
+			raise ConnectionSetupError("Maximum schannel retry depth exceeded")
 		ldap_server_kwargs = {
 			"host": target,
 			"get_info": ldap3.ALL,
 			"use_ssl": True if self.use_gc_ldaps or self.use_ldaps else False,
 			"tls": tls,
 			"port": self.port,
-			"formatter": {
-				"sAMAccountType": LDAP.resolve_samaccounttype,
-				"lastLogon": LDAP.ldap2datetime,
-				"whenCreated": LDAP.resolve_generalized_time,
-				"whenChanged": LDAP.resolve_generalized_time,
-				"pwdLastSet": LDAP.ldap2datetime,
-				"badPasswordTime": LDAP.ldap2datetime,
-				"lastLogonTimestamp": LDAP.ldap2datetime,
-				"objectGUID": LDAP.bin_to_guid,
-				"objectSid": LDAP.bin_to_sid,
-				"securityIdentifier": LDAP.bin_to_sid,
-				"mS-DS-CreatorSID": LDAP.bin_to_sid,
-				"msDS-ManagedPassword": LDAP.formatGMSApass,
-				"msDS-GroupMSAMembership": LDAP.parseMSAMembership,
-				"pwdProperties": LDAP.resolve_pwdProperties,
-				"userAccountControl": LDAP.resolve_uac,
-				"msDS-SupportedEncryptionTypes": LDAP.resolve_enc_type,
-				"trustAttributes": TRUST.resolve_trustAttributes,
-				"trustType": TRUST.resolve_trustType,
-				"trustDirection": TRUST.resolve_trustDirection,
-				"msExchVersion": EXCHANGE.resolve_msExchVersion,
-				"msDS-AllowedToActOnBehalfOfOtherIdentity": LDAP.resolve_msDSAllowedToActOnBehalfOfOtherIdentity,
-				"msDS-TrustForestTrustInfo": LDAP.resolve_msDSTrustForestTrustInfo,
-				"pKIExpirationPeriod": LDAP.resolve_pKIExpirationPeriod,
-				"pKIOverlapPeriod": LDAP.resolve_pKIOverlapPeriod,
-				"msDS-DelegatedMSAState": LDAP.resolve_delegated_msa_state
-			}
+			"formatter": self._get_formatter()
 		}
 
-		if self.use_ldaps:
-			self.proto = "LDAPS"
-			ldap_server_kwargs["use_ssl"] = True
-			ldap_server_kwargs["port"] = 636 if not self.port else self.port
-		elif self.use_gc_ldaps:
-			self.proto = "GCssl"
-			ldap_server_kwargs["use_ssl"] = True
-			ldap_server_kwargs["port"] = 3269 if not self.port else self.port
+		proto, use_ssl, port = self._resolve_protocol(tls=True)
+		if proto:
+			self.proto = proto
+			ldap_server_kwargs["use_ssl"] = use_ssl
+			ldap_server_kwargs["port"] = port
 
 		ldap_server = ldap3.Server(**ldap_server_kwargs)
-		
+
 		ldap_connection_kwargs = {
 			"server": ldap_server,
 			"user": None,
@@ -1998,33 +1959,33 @@ class CONNECTION:
 				logging.warning("Channel binding is enforced!")
 				if self.tls_channel_binding_supported and (self.use_ldaps or self.use_gc_ldaps):
 					logging.debug("Re-authenticate with channel binding")
-					return self.init_ldap_schannel_connection(target, tls, tls_channel_binding=True)
+					return self.init_ldap_schannel_connection(target, tls, tls_channel_binding=True, _retry_depth=_retry_depth + 1)
 				else:
 					logging.warning('ldap3 library doesn\'t support CB. Install with "pip install \"git+https://github.com/H0j3n/ldap3.git@powerview.py_match-requirements\""')
-					sys.exit(-1)
+					raise ConnectionSetupError("ldap3 library doesn't support channel binding")
 		except ldap3.core.exceptions.LDAPStrongerAuthRequiredResult as e:
 			logging.debug("Server returns LDAPStrongerAuthRequiredResult")
 			self.use_sign_and_seal = True
 			logging.warning("LDAP Signing is enforced!")
 			if self.sign_and_seal_supported:
 				logging.debug("Re-authenticate with seal and sign")
-				return self.init_ldap_schannel_connection(target, tls, seal_and_sign=True)
+				return self.init_ldap_schannel_connection(target, tls, seal_and_sign=True, _retry_depth=_retry_depth + 1)
 			else:
 				logging.warning('ldap3 library doesn\'t support CB. Install with "pip install \"git+https://github.com/H0j3n/ldap3.git@powerview.py_match-requirements\""')
-				sys.exit(-1)
+				raise ConnectionSetupError("ldap3 library doesn't support sign and seal")
 		except ldap3.core.exceptions.LDAPInappropriateAuthenticationResult as e:
 			logging.error("Cannot start kerberos signing/sealing when using TLS/SSL")
-			sys.exit(-1)
+			raise ConnectionSetupError("Cannot start kerberos signing/sealing when using TLS/SSL")
 		except ldap3.core.exceptions.LDAPInvalidValueError as e:
 			logging.error(str(e))
-			sys.exit(-1)
+			raise ConnectionSetupError(str(e))
 		except Exception as e:
-			logging.error("Error during schannel authentication with error: %s", str(e))
-			sys.exit(0)
-		
+			logging.error(f"Error during schannel authentication with error: {str(e)}")
+			raise ConnectionSetupError(f"Schannel authentication failed: {str(e)}")
+
 		if ldap_session.result is not None and ldap_session.result.get("result", 0) != 0:
 			logging.error(f"AuthError: {ldap_session.result}")
-			sys.exit(0)
+			raise ConnectionSetupError(f"Authentication error: {ldap_session.result}")
 
 		return ldap_server, ldap_session
 
@@ -2034,33 +1995,7 @@ class CONNECTION:
 		adws_server_kwargs = {
 			"host": target,
 			"port": 9389,
-			"formatter": {
-				"sAMAccountType": LDAP.resolve_samaccounttype,
-				"lastLogon": LDAP.ldap2datetime,
-				"whenCreated": LDAP.resolve_generalized_time,
-				"whenChanged": LDAP.resolve_generalized_time,
-				"pwdLastSet": LDAP.ldap2datetime,
-				"badPasswordTime": LDAP.ldap2datetime,
-				"lastLogonTimestamp": LDAP.ldap2datetime,
-				"objectGUID": LDAP.bin_to_guid,
-				"objectSid": LDAP.bin_to_sid,
-				"securityIdentifier": LDAP.bin_to_sid,
-				"mS-DS-CreatorSID": LDAP.bin_to_sid,
-				"msDS-ManagedPassword": LDAP.formatGMSApass,
-				"msDS-GroupMSAMembership": LDAP.parseMSAMembership,
-				"pwdProperties": LDAP.resolve_pwdProperties,
-				"userAccountControl": LDAP.resolve_uac,
-				"msDS-SupportedEncryptionTypes": LDAP.resolve_enc_type,
-				"trustAttributes": TRUST.resolve_trustAttributes,
-				"trustType": TRUST.resolve_trustType,
-				"trustDirection": TRUST.resolve_trustDirection,
-				"msExchVersion": EXCHANGE.resolve_msExchVersion,
-				"msDS-AllowedToActOnBehalfOfOtherIdentity": LDAP.resolve_msDSAllowedToActOnBehalfOfOtherIdentity,
-				"msDS-TrustForestTrustInfo": LDAP.resolve_msDSTrustForestTrustInfo,
-				"pKIExpirationPeriod": LDAP.resolve_pKIExpirationPeriod,
-				"pKIOverlapPeriod": LDAP.resolve_pKIOverlapPeriod,
-				"msDS-DelegatedMSAState": LDAP.resolve_delegated_msa_state
-			}
+			"formatter": self._get_formatter()
 		}
 		adws_server = adws.Server(**adws_server_kwargs)
 
@@ -2081,61 +2016,24 @@ class CONNECTION:
 				raise e
 			else:
 				logging.error(f"Error during ADWS authentication with error: {str(e)}")
-			sys.exit(0)
+			raise ConnectionSetupError(f"ADWS authentication failed: {str(e)}")
 
-	def init_ldap_connection(self, target, tls, domain=None, username=None, password=None, lmhash=None, nthash=None, auth_aes_key=None, seal_and_sign=False, tls_channel_binding=False, auth_method=ldap3.NTLM):
+	def init_ldap_connection(self, target, tls, domain=None, username=None, password=None, lmhash=None, nthash=None, auth_aes_key=None, seal_and_sign=False, tls_channel_binding=False, auth_method=ldap3.NTLM, _retry_depth=0):
+		if _retry_depth > 3:
+			raise ConnectionSetupError("Maximum LDAP connection retry depth exceeded")
 		ldap_server_kwargs = {
 			"host": target,
 			"get_info": ldap3.ALL,
 			"allowed_referral_hosts": [('*', True)],
 			"mode": ldap3.IP_V4_PREFERRED,
-			"formatter": {
-				"sAMAccountType": LDAP.resolve_samaccounttype,
-				"lastLogon": LDAP.ldap2datetime,
-				"whenCreated": LDAP.resolve_generalized_time,
-				"whenChanged": LDAP.resolve_generalized_time,
-				"pwdLastSet": LDAP.ldap2datetime,
-				"badPasswordTime": LDAP.ldap2datetime,
-				"lastLogonTimestamp": LDAP.ldap2datetime,
-				"objectGUID": LDAP.bin_to_guid,
-				"objectSid": LDAP.bin_to_sid,
-				"securityIdentifier": LDAP.bin_to_sid,
-				"mS-DS-CreatorSID": LDAP.bin_to_sid,
-				"msDS-ManagedPassword": LDAP.formatGMSApass,
-				"msDS-GroupMSAMembership": LDAP.parseMSAMembership,
-				"pwdProperties": LDAP.resolve_pwdProperties,
-				"userAccountControl": LDAP.resolve_uac,
-				"msDS-SupportedEncryptionTypes": LDAP.resolve_enc_type,
-				"trustAttributes": TRUST.resolve_trustAttributes,
-				"trustType": TRUST.resolve_trustType,
-				"trustDirection": TRUST.resolve_trustDirection,
-				"msExchVersion": EXCHANGE.resolve_msExchVersion,
-				"msDS-AllowedToActOnBehalfOfOtherIdentity": LDAP.resolve_msDSAllowedToActOnBehalfOfOtherIdentity,
-				"msDS-TrustForestTrustInfo": LDAP.resolve_msDSTrustForestTrustInfo,
-				"pKIExpirationPeriod": LDAP.resolve_pKIExpirationPeriod,
-				"pKIOverlapPeriod": LDAP.resolve_pKIOverlapPeriod,
-				"msDS-DelegatedMSAState": LDAP.resolve_delegated_msa_state
-			}
+			"formatter": self._get_formatter()
 		}
 
-		if tls:
-			if self.use_ldaps:
-				self.proto = "LDAPS"
-				ldap_server_kwargs["use_ssl"] = True
-				ldap_server_kwargs["port"] = 636 if not self.port else self.port
-			elif self.use_gc_ldaps:
-				self.proto = "GCssl"
-				ldap_server_kwargs["use_ssl"] = True
-				ldap_server_kwargs["port"] = 3269 if not self.port else self.port
-		else:
-			if self.use_gc:
-				self.proto = "GC"
-				ldap_server_kwargs["use_ssl"] = False
-				ldap_server_kwargs["port"] = 3268 if not self.port else self.port
-			elif self.use_ldap:
-				self.proto = "LDAP"
-				ldap_server_kwargs["use_ssl"] = False
-				ldap_server_kwargs["port"] = 389 if not self.port else self.port
+		proto, use_ssl, port = self._resolve_protocol(tls)
+		if proto:
+			self.proto = proto
+			ldap_server_kwargs["use_ssl"] = use_ssl
+			ldap_server_kwargs["port"] = port
 
 		bind = False
 
@@ -2143,9 +2041,9 @@ class CONNECTION:
 		
 		user = None
 		if auth_method == ldap3.NTLM:
-			user = '%s\\%s' % (domain, username)
+			user = f'{domain}\\{username}'
 		elif auth_method == ldap3.SIMPLE or auth_method == ldap3.SASL:
-			user = '{}@{}'.format(username, domain)
+			user = f'{username}@{domain}'
 		else:
 			user = username
 
@@ -2154,7 +2052,7 @@ class CONNECTION:
 			"raise_exceptions": True,
 			"authentication": auth_method
 		}
-		logging.debug("Authentication: {}, User: {}".format(auth_method, user))
+		logging.debug(f"Authentication: {auth_method}, User: {user}")
 
 		if seal_and_sign or self.use_sign_and_seal:
 			logging.debug("Using seal and sign")
@@ -2163,9 +2061,9 @@ class CONNECTION:
 			logging.debug("Using channel binding")
 			ldap_connection_kwargs["channel_binding"] = ldap3.TLS_CHANNEL_BINDING
 		
-		logging.debug(f"Connecting to %s, Port: %s, SSL: %s" % (ldap_server_kwargs["host"], ldap_server_kwargs["port"], ldap_server_kwargs["use_ssl"]))
+		logging.debug(f"Connecting to {ldap_server_kwargs['host']}, Port: {ldap_server_kwargs['port']}, SSL: {ldap_server_kwargs['use_ssl']}")
 		if self.hashes is not None:
-			ldap_connection_kwargs["password"] = '{}:{}'.format(lmhash, nthash)
+			ldap_connection_kwargs["password"] = f'{lmhash}:{nthash}'
 		elif password is not None:
 			ldap_connection_kwargs["password"] = password
 		
@@ -2185,42 +2083,42 @@ class CONNECTION:
 				self.use_channel_binding = True
 				if self.tls_channel_binding_supported and (self.use_ldaps or self.use_gc_ldaps):
 					logging.debug("Re-authenticate with channel binding")
-					return self.init_ldap_connection(target, tls, domain, username, password, lmhash, nthash, auth_aes_key, tls_channel_binding=True, auth_method=self.auth_method)
+					return self.init_ldap_connection(target, tls, domain, username, password, lmhash, nthash, auth_aes_key, tls_channel_binding=True, auth_method=self.auth_method, _retry_depth=_retry_depth + 1)
 				else:
 					if lmhash and nthash:
-						sys.exit(-1)
+						raise ConnectionSetupError("Channel binding is enforced and hash authentication is not supported without CB")
 					else:
 						logging.info("Falling back to SIMPLE authentication")
-						return self.init_ldap_connection(target, tls, domain, username, password, lmhash, nthash, auth_aes_key, auth_method=ldap3.SIMPLE)
+						return self.init_ldap_connection(target, tls, domain, username, password, lmhash, nthash, auth_aes_key, auth_method=ldap3.SIMPLE, _retry_depth=_retry_depth + 1)
 		except ldap3.core.exceptions.LDAPStrongerAuthRequiredResult as e:
 			logging.debug("Server returns LDAPStrongerAuthRequiredResult")
 			logging.warning("LDAP Signing is enforced!")
 			self.use_sign_and_seal = True
 			if self.sign_and_seal_supported:
 				logging.debug("Re-authenticate with seal and sign")
-				return self.init_ldap_connection(target, tls, domain, username, password, lmhash, nthash, auth_aes_key, seal_and_sign=True, auth_method=self.auth_method)
+				return self.init_ldap_connection(target, tls, domain, username, password, lmhash, nthash, auth_aes_key, seal_and_sign=True, auth_method=self.auth_method, _retry_depth=_retry_depth + 1)
 			else:
-				sys.exit(-1)
+				raise ConnectionSetupError("LDAP Signing is enforced but sign and seal is not supported")
 		except ldap3.core.exceptions.LDAPInappropriateAuthenticationResult as e:
 			logging.error("Cannot start kerberos signing/sealing when using TLS/SSL")
-			sys.exit(-1)
+			raise ConnectionSetupError("Cannot start kerberos signing/sealing when using TLS/SSL")
 		except ldap3.core.exceptions.LDAPInvalidValueError as e:
 			logging.error(str(e))
-			sys.exit(-1)
+			raise ConnectionSetupError(str(e))
 		except ldap3.core.exceptions.LDAPOperationsErrorResult as e:
-			logging.error("Failed to bind with error: %s" % (str(e)))
-			sys.exit(-1)
+			logging.error(f"Failed to bind with error: {str(e)}")
+			raise ConnectionSetupError(f"Failed to bind: {str(e)}")
 
 		if not bind:
 			error_code = ldap_session.result['message'].split(",")[2].replace("data","").strip()
 			error_status = LDAP.resolve_err_status(error_code)
 			if error_code and error_status:
-				logging.error("Bind not successful - %s [%s]" % (ldap_session.result['description'], error_status))
-				logging.debug("%s" % (ldap_session.result['message']))
+				# logging.error(f"Bind not successful - {ldap_session.result['description']} [{error_status}]")
+				logging.debug(f"{ldap_session.result['message']}")
 			else:
 				logging.error(f"Unexpected Error: {str(ldap_session.result['message'])}")
 
-			sys.exit(0)
+			raise ConnectionSetupError(f"Bind not successful: {ldap_session.result.get('description', 'unknown error')} [{error_status}]")
 		else:
 			logging.debug("Bind SUCCESS!")
 
@@ -2354,14 +2252,14 @@ class CONNECTION:
 			else:
 				if domain == '':
 					domain = ccache.principal.realm['data'].decode('utf-8')
-					logging.debug('Domain retrieved from CCache: %s' % domain)
+					logging.debug(f'Domain retrieved from CCache: {domain}')
 
-				logging.debug('Using Kerberos Cache: %s' % os.getenv('KRB5CCNAME'))
-				principal = 'cifs/%s@%s' % (self.targetIp.upper(), domain.upper())
+				logging.debug(f'Using Kerberos Cache: {os.getenv("KRB5CCNAME")}')
+				principal = f'cifs/{self.targetIp.upper()}@{domain.upper()}'
 
 				creds = ccache.getCredential(principal)
 				if creds is None:
-					principal = 'krbtgt/%s@%s' % (domain.upper(), domain.upper())
+					principal = f'krbtgt/{domain.upper()}@{domain.upper()}'
 					creds = ccache.getCredential(principal)
 					if creds is not None:
 						self.TGT = creds.toTGT()
@@ -2374,10 +2272,10 @@ class CONNECTION:
 
 				if username == '' and creds is not None:
 					username = creds['client'].prettyPrint().split(b'@')[0].decode('utf-8')
-					logging.debug('Username retrieved from CCache: %s' % username)
+					logging.debug(f'Username retrieved from CCache: {username}')
 				elif username == '' and len(ccache.principal.components) > 0:
 					username = ccache.principal.components[0]['data'].decode('utf-8')
-					logging.debug('Username retrieved from CCache: %s' % username)
+					logging.debug(f'Username retrieved from CCache: {username}')
 		
 		conn.kerberosLogin(username, password, domain, lmhash, nthash, aesKey, self.dc_ip, self.TGT, self.TGS)
 
@@ -2417,7 +2315,7 @@ class CONNECTION:
 			dce.connect()
 			dce.bind(samr.MSRPC_UUID_SAMR)
 			return dce
-		except:
+		except Exception:
 			return None
 
 	# stole from PetitPotam.py
@@ -2463,12 +2361,12 @@ class CONNECTION:
 		if not lmhash:
 			lmhash = self.lmhash
 
-		logging.debug("[RPCTransport] Using credentials: %s, %s, %s, %s, %s" % (username, password, domain, lmhash, nthash))
+		logging.debug(f"[RPCTransport] Using credentials: {username}, **********, {domain}, {lmhash}, {nthash}")
 
 		if not stringBindings:
 			stringBindings = epm.hept_map(host, samr.MSRPC_UUID_SAMR, protocol ='ncacn_ip_tcp')
 
-		logging.debug("[RPCTransport] Connecting to %s" % stringBindings)
+		logging.debug(f"[RPCTransport] Connecting to {stringBindings}")
 		rpctransport = transport.DCERPCTransportFactory(stringBindings)
 		rpctransport.set_dport(port)
 
@@ -2495,13 +2393,13 @@ class CONNECTION:
 				dce.bind(interface_uuid)
 			return dce
 		except SessionError as e:
-			logging.debug("[RPCTransport:SessionError] %s" % str(e))
+			logging.debug(f"[RPCTransport:SessionError] {str(e)}")
 			if raise_exceptions:
 				raise e
 			else:
 				return
 		except Exception as e:
-			logging.debug("[RPCTransport:Exception] %s" % str(e))
+			logging.debug(f"[RPCTransport:Exception] {str(e)}")
 			if raise_exceptions:
 				raise e
 			else:
@@ -2669,7 +2567,7 @@ class CONNECTION:
 		"""Destructor to ensure all resources are properly cleaned up"""
 		try:
 			self.close()
-		except:
+		except Exception:
 			pass
 
 	def get_smb_connection_with_stealth(self, host, delay_range=(1, 3), max_retries=3):
@@ -2768,7 +2666,7 @@ class CONNECTION:
 class LDAPRelayServer(LDAPRelayClient):
 	def initConnection(self):
 		self.ldap_relay.scheme = "LDAP"
-		self.server = ldap3.Server("ldap://%s:%s" % (self.targetHost, self.targetPort), get_info=ldap3.ALL)
+		self.server = ldap3.Server(f"ldap://{self.targetHost}:{self.targetPort}", get_info=ldap3.ALL)
 		self.session = ldap3.Connection(self.server, user="a", password="b", authentication=ldap3.NTLM)
 		self.session.open(False)
 		return True
@@ -2837,11 +2735,11 @@ class LDAPSRelayServer(LDAPRelayServer):
 	
 	def initConnection(self):
 		self.ldap_relay.scheme = "LDAPS"
-		self.server = ldap3.Server("ldaps://%s:%s" % (self.targetHost, self.targetPort), get_info=ldap3.ALL)
+		self.server = ldap3.Server(f"ldaps://{self.targetHost}:{self.targetPort}", get_info=ldap3.ALL)
 		self.session = ldap3.Connection(self.server, user="a", password="b", authentication=ldap3.NTLM)
 		try:
 			self.session.open(False)
-		except:
+		except Exception:
 			pass
 		return True
 
@@ -3060,8 +2958,8 @@ class Relay:
 			print("")
 			self.shutdown()
 		except Exception as e:
-			logging.error("Got error: %s" % e)
-			sys.exit()
+			logging.error(f"Got error: {e}")
+			raise ConnectionSetupError(f"Relay failed: {str(e)}")
 
 	def get_relay_ldap_server(self, *args, **kwargs) -> LDAPRelayClient:
 		server = LDAPRelayServer(*args, **kwargs)

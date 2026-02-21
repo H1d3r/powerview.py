@@ -1,5 +1,4 @@
 import os
-import re
 import shlex
 try:
     import gnureadline as readline
@@ -47,7 +46,7 @@ COMMANDS = {
     'Get-DomainTrust':['-Identity','-LDAPFilter','-Properties','-SearchBase','-Server','-Select', '-Where', '-Count', '-NoWrap', '-TableView', '-SortBy', '-OutFile', '-NoCache', '-NoVulnCheck', '-Raw'],
     'Get-DomainTrustKey':['-Identity','-Properties','-SearchBase','-Server','-Select', '-Where', '-Count', '-NoWrap', '-TableView', '-SortBy', '-OutFile', '-NoCache', '-NoVulnCheck', '-Raw'],
     'Get-TrustKey':['-Identity','-Properties','-SearchBase','-Server','-Select', '-Where', '-Count', '-NoWrap', '-TableView', '-SortBy', '-OutFile', '-NoCache', '-NoVulnCheck', '-Raw'],
-    'Get-DomainUser':['-Identity','-Properties','-LDAPFilter','-SearchBase','-Server','-Select','-Enabled','-Disabled','-RBCD', '-ShadowCred', '-Unconstrained','-PassNotRequired','-PreAuthNotRequired','-AllowDelegation','-DisallowDelegation','-AdminCount','-Lockout','-PassExpired','-TrustedToAuth','-SPN','-MemberOf','-Department','-Where', '-Count', '-NoWrap', '-TableView', '-SortBy', '-OutFile', '-NoCache', '-NoVulnCheck', '-Raw'],
+    'Get-DomainUser':['-Identity','-Properties','-LDAPFilter','-SearchBase','-Server','-Select','-Enabled','-Disabled','-RBCD', '-ShadowCred', '-Unconstrained','-PassNotRequired','-PreAuthNotRequired','-AllowDelegation','-DisallowDelegation','-AdminCount','-LockedOut','-PassExpired','-TrustedToAuth','-SPN','-MemberOf','-Department','-Where', '-Count', '-NoWrap', '-TableView', '-SortBy', '-OutFile', '-NoCache', '-NoVulnCheck', '-Raw'],
     'Get-LocalUser':['-Computer','-ComputerName', '-Identity', '-Properties', '-Select','-Enabled','-Disabled', '-Server', '-Count', '-OutFile', '-TableView', '-SortBy'],
     'Get-NamedPipes':['-Name','-Computer','-ComputerName', '-Timeout', '-MaxThreads', '-Server', '-NoWrap', '-Count', '-TableView', '-OutFile'],
     'Get-NetShare':['-Computer','-ComputerName','-TableView','-Server', '-NoWrap', '-Count', '-OutFile'],
@@ -167,8 +166,6 @@ COMMANDS = {
     'exit':'',
 }
 
-RE_SPACE = re.compile(r'.*\s+$', re.M)
-
 class Completer(object):
 
     def _listdir(self, root):
@@ -189,21 +186,11 @@ class Completer(object):
         tmp = dirname if dirname else '.'
         res = [os.path.join(dirname, p)
                 for p in self._listdir(tmp) if p.startswith(rest)]
-        # more than one match, or single match which does not exist (typo)
         if len(res) > 1 or not os.path.exists(path):
             return res
-        # resolved to a single directory, so return list of files below it
         if os.path.isdir(path):
             return [os.path.join(path, p) for p in self._listdir(path)]
-        # exact file match terminates this completion
         return [path + ' ']
-
-    def complete_extra(self, args):
-        "Completions for the 'extra' command."
-        if not args:
-            return self._complete_path('.')
-        # treat the last arg as a path and complete it
-        return self._complete_path(args[-1])
 
     def complete(self, text, state):
         buffer = readline.get_line_buffer()

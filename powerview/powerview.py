@@ -106,7 +106,7 @@ class PowerView:
 		self.target_server = target_server
 
 		if not target_domain and not args.no_admin_check:
-			self.is_admin = self.is_admin()
+			self.is_admin = self._check_admin_status()
 
 		self.domain_instances = {}
 
@@ -165,6 +165,45 @@ class PowerView:
 		self.flatName = self.ldap_server.info.other["ldapServiceName"][0].split("@")[-1].split(".")[0] if isinstance(self.ldap_server.info.other["ldapServiceName"], list) else self.ldap_server.info.other["ldapServiceName"].split("@")[-1].split(".")[0]
 		self.dc_dnshostname = self.ldap_server.info.other["dnsHostName"][0] if isinstance(self.ldap_server.info.other["dnsHostName"], list) else self.ldap_server.info.other["dnsHostName"]
 		self.whoami = self.conn.who_am_i()
+
+	def _resolve_identity_values(self, identity=None, args=None):
+		value = identity
+		if value is None and args is not None and hasattr(args, 'identity'):
+			value = args.identity
+		if value is None:
+			return []
+		if isinstance(value, list):
+			items = value
+		else:
+			items = [value]
+		cleaned = []
+		seen = set()
+		for item in items:
+			if item is None:
+				continue
+			if isinstance(item, str):
+				item = item.strip()
+				if not item:
+					continue
+			if item in seen:
+				continue
+			seen.add(item)
+			cleaned.append(item)
+		if '*' in cleaned and len(cleaned) > 1:
+			return ['*']
+		return cleaned
+
+	def _build_identity_filter(self, identity_values, builder):
+		filters = []
+		for ident in identity_values or []:
+			if ident is None:
+				continue
+			filters.append(builder(ident))
+		if not filters:
+			return ""
+		if len(filters) == 1:
+			return filters[0]
+		return "(|" + "".join(filters) + ")"
 
 	def add_domain_connection(self, domain):
 		"""Add a domain connection to the pool"""
@@ -366,14 +405,12 @@ class PowerView:
 		method = getattr(self, method_name, None)
 		if not method:
 			raise ValueError(f"Method {method_name} not found in PowerView")
-		# Get the method's signature
 		method_signature = inspect.signature(method)
 		method_params = method_signature.parameters
-		# Filter out unsupported arguments
 		method_args = {k: v for k, v in vars(args).items() if k in method_params}
 		return method(**method_args)
 
-	def is_admin(self):
+	def _check_admin_status(self):
 		self.is_domainadmin = False
 		self.is_admincount = False
 		username = self.whoami.split('\\')[1] if "\\" in self.whoami else self.whoami
@@ -454,20 +491,15 @@ class PowerView:
 		ldap_filter = ""
 		identity_filter = ""
 
-		if identity:
-			if is_dn(identity):
-				identity_filter += f"(distinguishedName={identity})"
-			elif is_sid(identity):
-				identity_filter += f"(objectSid={identity})"
-			else:
-				identity_filter += f"(|(sAMAccountName={identity})(name={identity})(cn={identity}))"
-		elif args and hasattr(args, 'identity') and args.identity:
-			if is_dn(args.identity):
-				identity_filter += f"(distinguishedName={args.identity})"
-			elif is_sid(args.identity):
-				identity_filter += f"(objectSid={args.identity})"
-			else:
-				identity_filter += f"(|(sAMAccountName={args.identity})(name={args.identity})(cn={args.identity}))"
+		identity_values = self._resolve_identity_values(identity, args)
+		if identity_values:
+			def build_identity_filter(value):
+				if is_dn(value):
+					return f"(distinguishedName={value})"
+				if is_sid(value):
+					return f"(objectSid={value})"
+				return f"(|(sAMAccountName={value})(name={value})(cn={value}))"
+			identity_filter = self._build_identity_filter(identity_values, build_identity_filter)
 
 		if args:
 			if hasattr(args, 'preauthnotrequired') and args.preauthnotrequired:
@@ -479,7 +511,7 @@ class PowerView:
 			if hasattr(args, 'admincount') and args.admincount:
 				logging.debug('[Get-DomainUser] Searching for adminCount=1')
 				ldap_filter += f'(admincount=1)'
-			if hasattr(args, 'lockout') and args.lockout:
+			if hasattr(args, 'lockedout') and args.lockedout:
 				logging.debug('[Get-DomainUser] Searching for locked out user')
 				ldap_filter += f'(userAccountControl:1.2.840.113556.1.4.803:=16)'
 			if hasattr(args, 'allowdelegation') and args.allowdelegation:
@@ -551,6 +583,17 @@ class PowerView:
 
 	def get_localuser(self, computer_name, identity=None, properties=[], port=445, args=None):
 		entries = list()
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				result = self.get_localuser(computer_name, identity=ident, properties=properties, port=port, args=args)
+				if isinstance(result, list):
+					results.extend(result)
+				elif result:
+					results.append(result)
+			return results
+		identity = identity_values[0] if identity_values else None
 
 		if computer_name is None:
 			#computer_name = host2ip(self.get_server_dns(), self.nameserver, 3, True, use_system_ns=self.use_system_nameserver, type=list)
@@ -655,12 +698,10 @@ class PowerView:
 			'msDS-SupportedEncryptionTypes',
 			'msDS-AllowedToActOnBehalfOfOtherIdentity'
 		]
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties
 		if not properties:
 			properties = def_prop
 		searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else searchbase
-
 		ldap_filter = ""
 		identity_filter = ""
 
@@ -673,8 +714,12 @@ class PowerView:
 		
 		logging.debug(f"[Get-DomainController] Using search base: {searchbase}")
 
-		if identity:
-			identity_filter += f"(|(name={identity})(sAMAccountName={identity})(dnsHostName={identity}))"
+		identity_values = self._resolve_identity_values(identity, args)
+		if identity_values:
+			identity_filter = self._build_identity_filter(
+				identity_values,
+				lambda value: f"(|(name={value})(sAMAccountName={value})(dnsHostName={value}))"
+			)
 
 		if args:
 			if args.ldapfilter:
@@ -718,7 +763,6 @@ class PowerView:
 		def_prop = [
 			ldap3.ALL_ATTRIBUTES
 		]
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties
 		include_deleted = args.include_deleted if hasattr(args, 'include_deleted') and args.include_deleted else include_deleted
 		properties = set(properties or def_prop)
@@ -735,13 +779,15 @@ class PowerView:
 
 		identity_filter = "" if not identity_filter else identity_filter
 		ldap_filter = "" if not ldap_filter else ldap_filter
-		if identity and not identity_filter:
-			if is_dn(identity):
-				identity_filter = f"(distinguishedName={identity})"
-			elif is_sid(identity):
-				identity_filter = f"(objectSid={identity})"
-			else:
-				identity_filter = f"(|(samAccountName={identity})(name={identity})(displayName={identity})(objectSid={identity})(distinguishedName={identity})(dnsHostName={identity})(objectGUID=*{identity}*))"
+		identity_values = self._resolve_identity_values(identity, args)
+		if identity_values and not identity_filter:
+			def build_identity_filter(value):
+				if is_dn(value):
+					return f"(distinguishedName={value})"
+				if is_sid(value):
+					return f"(objectSid={value})"
+				return f"(|(samAccountName={value})(name={value})(displayName={value})(objectSid={value})(distinguishedName={value})(dnsHostName={value})(objectGUID=*{value}*))"
+			identity_filter = self._build_identity_filter(identity_values, build_identity_filter)
 		
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
@@ -774,9 +820,15 @@ class PowerView:
 		return entries
 
 	def restore_domainobject(self, identity=None, new_name=None, targetpath=None, args=None):
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		new_name = args.new_name if hasattr(args, 'new_name') and args.new_name else None
 		targetpath = args.targetpath if hasattr(args, 'targetpath') and args.targetpath else None
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.restore_domainobject(identity=ident, new_name=new_name, targetpath=targetpath, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		searchbase = f"CN=Deleted Objects,{self.root_dn}"
 
 		logging.debug(f"[Restore-DomainObject] Searching for {identity} in deleted objects container")
@@ -855,6 +907,14 @@ class PowerView:
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
 
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.remove_domainobject(ident, searchbase=searchbase, args=args, search_scope=search_scope))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
+
 		targetobject = self.get_domainobject(identity=identity, properties=[
 			'sAMAccountname',
 			'ObjectSID',
@@ -887,7 +947,6 @@ class PowerView:
 		return succeeded
 
 	def get_domainobjectowner(self, identity=None, ldapfilter=None, searchbase=None, args=None, search_scope=ldap3.SUBTREE, no_cache=False, no_vuln_check=False, raw=False):
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		ldapfilter = args.ldapfilter if hasattr(args, 'ldapfilter') and args.ldapfilter else None
 		searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else searchbase
 		if not searchbase:
@@ -896,6 +955,8 @@ class PowerView:
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
+		if identity is None and args and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 
 		objects = self.get_domainobject(
 			identity=identity,
@@ -951,7 +1012,6 @@ class PowerView:
 			'gPLink',
 			'dSCorePropagationData'
 		]
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		writable = args.writable if hasattr(args, 'writable') and args.writable else writable
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties
 		properties = set(properties or def_prop)
@@ -960,8 +1020,12 @@ class PowerView:
 		ldap_filter = ""
 		identity_filter = "" 
 
-		if identity:
-			identity_filter += f"(|(name={identity})(distinguishedName={identity}))"
+		identity_values = self._resolve_identity_values(identity, args)
+		if identity_values:
+			identity_filter = self._build_identity_filter(
+				identity_values,
+				lambda value: f"(|(name={value})(distinguishedName={value}))"
+			)
 
 		if writable:
 			exclude_list = [
@@ -1114,7 +1178,6 @@ class PowerView:
 
 	def get_domainobjectacl(self, identity=None, security_identifier=None, ldapfilter=None, resolveguids=False, guids_map_dict=None, searchbase=None, args=None, search_scope=ldap3.SUBTREE, no_cache=False, no_vuln_check=False, raw=False):
 		if args:
-			identity = args.identity if hasattr(args, 'identity') else identity
 			security_identifier = args.security_identifier if hasattr(args, 'security_identifier') else security_identifier
 			depth = args.depth if hasattr(args, 'depth') else 0
 			searchbase = args.searchbase if hasattr(args, 'searchbase') else searchbase
@@ -1122,6 +1185,8 @@ class PowerView:
 			no_cache = args.no_cache if hasattr(args, 'no_cache') else no_cache
 			no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') else no_vuln_check
 			raw = args.raw if hasattr(args, 'raw') else raw
+		if identity is None and args and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 			
 		searchbase = searchbase or self.root_dn
 		ldapfilter = f"(&{ldapfilter})(nTSecurityDescriptor=*)" if ldapfilter else "(nTSecurityDescriptor=*)"
@@ -1310,7 +1375,6 @@ class PowerView:
 			'msDS-SupportedEncryptionTypes',
 			'description'
 		]
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		if args and hasattr(args, 'properties') and args.properties:
 			properties = set(args.properties)
 		else:
@@ -1325,19 +1389,20 @@ class PowerView:
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
-
 		logging.debug(f"[Get-DomainComputer] Using search base: {searchbase}")
 		
 		ldap_filter = ""
 		identity_filter = ""
 
-		if identity:
-			if is_dn(identity):
-				identity_filter += f"(distinguishedName={identity})"
-			elif is_sid(identity):
-				identity_filter += f"(objectSid={identity})"
-			else:
-				identity_filter += f"(|(name={identity})(sAMAccountName={identity})(dnsHostName={identity})(cn={identity}))"
+		identity_values = self._resolve_identity_values(identity, args)
+		if identity_values:
+			def build_identity_filter(value):
+				if is_dn(value):
+					return f"(distinguishedName={value})"
+				if is_sid(value):
+					return f"(objectSid={value})"
+				return f"(|(name={value})(sAMAccountName={value})(dnsHostName={value})(cn={value}))"
+			identity_filter = self._build_identity_filter(identity_values, build_identity_filter)
 
 		if args:
 			if hasattr(args, 'unconstrained') and args.unconstrained:
@@ -1489,7 +1554,6 @@ class PowerView:
 			"msDS-ManagedPassword"
 		]
 
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties
 		if properties is None:
 			properties = def_prop
@@ -1497,6 +1561,8 @@ class PowerView:
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
+		if identity is None and args and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 
 		entries = self.get_domainobject(
 			identity=identity,
@@ -1524,9 +1590,15 @@ class PowerView:
 		return entries
 
 	def add_domaingmsa(self, identity=None, principals_allowed_to_retrieve_managed_password=None, dnshostname=None, basedn=None, args=None):
-		identity = args.identity if args and hasattr(args, 'identity') and args.identity else identity
 		dnshostname = args.dnshostname if args and hasattr(args, 'dnshostname') and args.dnshostname else dnshostname
 		principals_allowed_to_retrieve_managed_password = args.principals_allowed_to_retrieve_managed_password if args and hasattr(args, 'principals_allowed_to_retrieve_managed_password') and args.principals_allowed_to_retrieve_managed_password else principals_allowed_to_retrieve_managed_password
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.add_domaingmsa(identity=ident, principals_allowed_to_retrieve_managed_password=principals_allowed_to_retrieve_managed_password, dnshostname=dnshostname, basedn=basedn, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		basedn = args.basedn if args and hasattr(args, 'basedn') and args.basedn else basedn
 
 		if not identity:
@@ -1604,7 +1676,13 @@ class PowerView:
 			return False 
 
 	def remove_domaingmsa(self, identity=None, searchbase=None, args=None):
-		identity = args.identity if args and hasattr(args, 'identity') and args.identity else identity
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.remove_domaingmsa(identity=ident, searchbase=searchbase, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		searchbase = args.searchbase if args and hasattr(args, 'searchbase') and args.searchbase else searchbase
 		if not identity:
 			raise ValueError("[Remove-DomainGMSA] -Identity is required")
@@ -1644,7 +1722,6 @@ class PowerView:
 		return True
 
 	def get_domainrbcd(self, identity=None, args=None, no_cache=False, no_vuln_check=False, raw=True):
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		properties = [
 			"sAMAccountName",
 			"sAMAccountType",
@@ -1661,6 +1738,8 @@ class PowerView:
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
+		if identity is None and args and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 
 		# get source identity
 		sourceObj = self.get_domainobject(
@@ -1737,20 +1816,22 @@ class PowerView:
 		"""
 		List WDS servers which can host Distribution Points or MDT shares.
 		"""
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties
 		searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
-
 		logging.debug(f"[Get-DomainWDS] Using search base: {searchbase}")
 
 		ldap_filter = ""
 		identity_filter = ""
 
-		if identity:
-			identity_filter += f"(|(|(samAccountName={identity})(name={identity})(distinguishedName={identity})))"
+		identity_values = self._resolve_identity_values(identity, args)
+		if identity_values:
+			identity_filter = self._build_identity_filter(
+				identity_values,
+				lambda value: f"(|(|(samAccountName={value})(name={value})(distinguishedName={value})))"
+			)
 
 		if args:
 			if args.ldapfilter:
@@ -1826,17 +1907,18 @@ class PowerView:
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
-
 		logging.debug(f"[Get-DomainGroup] Using search base: {searchbase}")
 		
 		ldap_filter = ""
 		identity_filter = ""
 
-		if identity:
-			if is_dn(identity):
-				identity_filter += f"(distinguishedName={identity})"
-			else:
-				identity_filter += f"(|(|(samAccountName={identity})(name={identity})(cn={identity})))"
+		identity_values = self._resolve_identity_values(identity, args)
+		if identity_values:
+			def build_identity_filter(value):
+				if is_dn(value):
+					return f"(distinguishedName={value})"
+				return f"(|(|(samAccountName={value})(name={value})(cn={value})))"
+			identity_filter = self._build_identity_filter(identity_values, build_identity_filter)
 
 		if args:
 			if args.admincount:
@@ -1922,6 +2004,8 @@ class PowerView:
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
+		if identity is None and args and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 
 		# get the identity group information
 		entries = self.get_domaingroup(
@@ -2066,15 +2150,17 @@ class PowerView:
 			'gPCMachineExtensionNames',
 			'dSCorePropagationData'
 		]
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties
 		searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else searchbase
 		properties = set(properties or def_prop)
-		
 		ldap_filter = ""
 		identity_filter = ""
-		if identity:
-			identity_filter = f"(|(distinguishedName={identity})(cn=*{identity}*)(displayName={identity}))"
+		identity_values = self._resolve_identity_values(identity, args)
+		if identity_values:
+			identity_filter = self._build_identity_filter(
+				identity_values,
+				lambda value: f"(|(distinguishedName={value})(cn=*{value}*)(displayName={value}))"
+			)
 
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
@@ -2103,7 +2189,8 @@ class PowerView:
 		)
 
 	def get_domaingpolocalgroup(self, args=None, identity=None):
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
+		if identity is None and args and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 		new_entries = []
 		entries = self.get_domaingpo(identity=identity)
 		if len(entries) == 0:
@@ -2153,11 +2240,12 @@ class PowerView:
 		Parse GPO settings from SYSVOL share
 		Returns dictionary containing Machine and User configurations
 		"""
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else searchbase
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
+		if identity is None and args and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 
 		entries = self.get_domaingpo(
 			identity=identity,
@@ -2284,8 +2372,6 @@ class PowerView:
 		]
 
 		properties = set(properties or def_prop)
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
-
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
 
@@ -2294,11 +2380,14 @@ class PowerView:
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
-
 		ldap_filter = ""
 		identity_filter = ""
-		if identity:
-			identity_filter = f"(name={identity})"
+		identity_values = self._resolve_identity_values(identity, args)
+		if identity_values:
+			identity_filter = self._build_identity_filter(
+				identity_values,
+				lambda value: f"(name={value})"
+			)
 		
 		if args:
 			if args.ldapfilter:
@@ -2444,7 +2533,6 @@ class PowerView:
 		return identity
 
 	def get_domain(self, args=None, properties=[], identity=None, searchbase=None, search_scope=ldap3.SUBTREE, no_cache=False, no_vuln_check=False, raw=False):
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties
 		if not properties:
 			properties = ALL_ATTRIBUTES
@@ -2455,14 +2543,15 @@ class PowerView:
 		if not searchbase:
 			searchbase = self.root_dn
 		search_scope = args.search_scope if hasattr(args, 'search_scope') and args.search_scope else search_scope
-
 		ldap_filter = ""
 		identity_filter = ""
-		if identity:
-			if is_dn(identity):
-				identity_filter = f"(distinguishedName={identity})"
-			else:
-				identity_filter = f"(|(name={identity})(distinguishedName={identity}))"
+		identity_values = self._resolve_identity_values(identity, args)
+		if identity_values:
+			def build_identity_filter(value):
+				if is_dn(value):
+					return f"(distinguishedName={value})"
+				return f"(|(name={value})(distinguishedName={value}))"
+			identity_filter = self._build_identity_filter(identity_values, build_identity_filter)
 
 		if args:
 			if args.ldapfilter:
@@ -2525,13 +2614,13 @@ class PowerView:
 
 		args = args or self.args
 		properties = properties or def_prop
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		legacy = args.legacy if hasattr(args, 'legacy') and args.legacy else legacy
 		forest = args.forest if hasattr(args, 'forest') and args.forest else forest
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
 		searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else searchbase
+		identity_values = self._resolve_identity_values(identity, args)
 
 		if not searchbase:
 			naming_contexts = getattr(self, 'naming_contexts', [])
@@ -2556,8 +2645,11 @@ class PowerView:
 						searchbase = [forest_dnszone_base, domain_dnszone_base]
 
 		identity_filter = ""
-		if identity:
-			identity_filter += f"(distinguishedName={identity})" if is_dn(identity) else f"(name={identity})"
+		if identity_values:
+			identity_filter = self._build_identity_filter(
+				identity_values,
+				lambda value: f"(distinguishedName={value})" if is_dn(value) else f"(name={value})"
+			)
 		
 		ldap_filter = f"(&(objectClass=dnsZone){identity_filter})"
 
@@ -2623,7 +2715,6 @@ class PowerView:
 		]
 
 		zonename = args.zonename if hasattr(args, 'zonename') and args.zonename else zonename
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		legacy = args.legacy if hasattr(args, 'legacy') and args.legacy else legacy
 		forest = args.forest if hasattr(args, 'forest') and args.forest else forest
 		record_type = args.record_type if hasattr(args, 'record_type') and args.record_type else record_type
@@ -2632,6 +2723,11 @@ class PowerView:
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
 		searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else searchbase
+		identity_values = self._resolve_identity_values(identity, args)
+		identity_filter = self._build_identity_filter(
+			identity_values,
+			lambda value: f"(distinguishedName={value})" if is_dn(value) else f"(name={value})"
+		)
 
 		if not searchbase:
 			naming_contexts = getattr(self, 'naming_contexts', [])
@@ -2665,10 +2761,6 @@ class PowerView:
 		for zone in zones:
 			zoneDN = zone['attributes']['distinguishedName']
 			
-			identity_filter = ""
-			if identity:
-				identity_filter += f"(distinguishedName={identity})" if is_dn(identity) else f"(name={identity})"
-
 			ldap_filter = f"(&(objectClass=dnsNode){identity_filter})"
 				
 			logging.debug(f"[Get-DomainDNSRecord] Search base: {zoneDN}")
@@ -2754,17 +2846,21 @@ class PowerView:
 			"mSSMSCapabilities",
 		]
 		properties = def_prop if not properties else properties
-		identity = '*' if not identity else identity
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
+		identity_values = self._resolve_identity_values(identity, args)
+		if not identity_values:
+			identity_values = ['*']
+		identity_filter = self._build_identity_filter(
+			identity_values,
+			lambda value: f"(|(name={value})(distinguishedName={value}))"
+		)
 
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn 
 
 		ldap_filter = ""
-		identity_filter = f"(|(name={identity})(distinguishedName={identity}))"
-
 		if args:
 			if args.ldapfilter:
 				logging.debug(f'[Get-DomainSCCM] Using additional LDAP filter: {args.ldapfilter}')
@@ -2837,12 +2933,12 @@ class PowerView:
 			"distinguishedName",
 			"displayName"
 		]
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		properties = args.properties if hasattr(args, 'properties') and args.properties else (properties if properties else def_prop)
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		no_vuln_check = args.no_vuln_check if hasattr(args, 'no_vuln_check') and args.no_vuln_check else no_vuln_check
 		raw = args.raw if hasattr(args, 'raw') and args.raw else raw
 		check_all = args.check_all if hasattr(args, 'check_all') else check_all
+		identity = identity if identity is not None else (args.identity if hasattr(args, 'identity') and args.identity else None)
 
 		ca_fetch = CAEnum(self, check_all=check_all)
 		entries = ca_fetch.fetch_enrollment_services(
@@ -2891,6 +2987,13 @@ class PowerView:
 	def remove_domaincatemplate(self, identity, searchbase=None, args=None):
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else f"CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,{self.root_dn}"
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.remove_domaincatemplate(ident, searchbase=searchbase, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		ca_fetch = CAEnum(self)
 		templates = ca_fetch.get_certificate_templates(identity=identity, ca_search_base=searchbase)
 		if len(templates) > 1:
@@ -2935,10 +3038,16 @@ class PowerView:
 			return False
 
 	def unlock_adaccount(self, identity=None, searchbase=None, no_cache=False, args=None):
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.unlock_adaccount(identity=ident, searchbase=searchbase, no_cache=no_cache, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		
 		# check if identity exists
 		identity_object = self.get_domainobject(identity=identity, searchbase=searchbase, properties=["distinguishedName","sAMAccountName","lockoutTime"], no_cache=no_cache, raw=True)
@@ -3103,10 +3212,16 @@ class PowerView:
 			return False
 
 	def enable_adaccount(self, identity=None, searchbase=None, no_cache=False, args=None):
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.enable_adaccount(identity=ident, searchbase=searchbase, no_cache=no_cache, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		
 		identity_object = self.get_domainobject(identity=identity, searchbase=searchbase, properties=["distinguishedName","sAMAccountName","userAccountControl"], no_cache=no_cache, raw=True)
 		if len(identity_object) > 1:
@@ -3147,10 +3262,16 @@ class PowerView:
 			return False
 
 	def disable_adaccount(self, identity=None, searchbase=None, no_cache=False, args=None):
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.disable_adaccount(identity=ident, searchbase=searchbase, no_cache=no_cache, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		
 		identity_object = self.get_domainobject(identity=identity, searchbase=searchbase, properties=["distinguishedName","sAMAccountName","userAccountControl"], no_cache=no_cache, raw=True)
 		if len(identity_object) > 1:
@@ -3212,6 +3333,13 @@ class PowerView:
 		
 
 	def add_domaingpo(self, identity, description=None, basedn=None, args=None):
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.add_domaingpo(ident, description=description, basedn=basedn, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		name = '{%s}' % get_uuid(upper=True)
 
 		basedn = "CN=Policies,CN=System,%s" % (self.root_dn) if not basedn else basedn
@@ -3302,6 +3430,13 @@ displayName=New Group Policy Object
 			return False
 
 	def add_domainou(self, identity, basedn=None, args=None):
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.add_domainou(ident, basedn=basedn, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		basedn = self.root_dn if not basedn else basedn
 
 		dn_exist = self.get_domainobject(identity=basedn)
@@ -3334,6 +3469,13 @@ displayName=New Group Policy Object
 	def remove_domainou(self, identity, searchbase=None, sd_flag=None, args=None):
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.remove_domainou(ident, searchbase=searchbase, sd_flag=sd_flag, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 
 		# verify if the ou exists
 		targetobject = self.get_domainobject(identity=identity, searchbase=searchbase, properties=['distinguishedName'], sd_flag=sd_flag)
@@ -3774,6 +3916,9 @@ displayName=New Group Policy Object
 			"msPKI-Minimal-Key-Size"
 		]
 
+		if identity is None and args and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
+
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else f"CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,{self.root_dn}"
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
@@ -3986,6 +4131,13 @@ displayName=New Group Policy Object
 	def set_domainrbcd(self, identity, delegatefrom, searchbase=None, args=None, raw=True):
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.set_domainrbcd(ident, delegatefrom, searchbase=searchbase, args=args, raw=raw))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 
 		# verify that the identity exists
 		_identity = self.get_domainobject(identity=identity,
@@ -4050,7 +4202,7 @@ displayName=New Group Policy Object
 
 	def set_shadowcredential(self, identity=None, action="add", device_id=None, export="PFX", cert_outfile=None, pfx_password=None, no_password=False, key_size=2048, searchbase=None, args=None):
 		if args is not None:
-			if hasattr(args, 'identity') and args.identity is not None:
+			if hasattr(args, 'identity') and args.identity is not None and identity is None:
 				identity = args.identity
 			if hasattr(args, 'searchbase') and args.searchbase is not None:
 				searchbase = args.searchbase
@@ -4074,6 +4226,13 @@ displayName=New Group Policy Object
 				action = 'remove'
 			elif hasattr(args, 'add') and args.add:
 				action = 'add'
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.set_shadowcredential(identity=ident, action=action, device_id=device_id, export=export, cert_outfile=cert_outfile, pfx_password=pfx_password, no_password=no_password, key_size=key_size, searchbase=searchbase, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 
 		shadow = ShadowCredential(self)
 		return shadow.execute(
@@ -4164,6 +4323,13 @@ displayName=New Group Policy Object
 		if not args or not identity:
 			logging.error("[Set-DomainCATemplate] No identity or args supplied")
 			return
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.set_domaincatemplate(ident, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 
 		ca_fetch = CAEnum(self)
 		target_template = ca_fetch.get_certificate_templates(identity=identity, properties=['*'])
@@ -4231,6 +4397,13 @@ displayName=New Group Policy Object
 		return succeeded
 
 	def add_domaingroupmember(self, identity, members, args=None):
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.add_domaingroupmember(ident, members, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		if not is_dn(identity):
 			group_entry = self.get_domaingroup(identity=identity, properties=['distinguishedName'])
 			if len(group_entry) == 0:
@@ -4411,6 +4584,13 @@ displayName=New Group Policy Object
 			return True
 
 	def remove_domaingroupmember(self, identity, members, args=None):
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.remove_domaingroupmember(ident, members, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		group_entry = self.get_domaingroup(identity=identity,properties=['distinguishedName'])
 		user_entry = self.get_domainobject(identity=members,properties=['distinguishedName'])
 		if len(group_entry) == 0:
@@ -4436,6 +4616,13 @@ displayName=New Group Policy Object
 		return succeeded
 
 	def remove_domainuser(self, identity):
+		identity_values = self._resolve_identity_values(identity)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.remove_domainuser(ident))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		if not identity:
 			logging.error('[Remove-DomainUser] Identity is required')
 			return
@@ -4449,6 +4636,13 @@ displayName=New Group Policy Object
 		return au.removeUser(identity_dn)
 
 	def add_domaingroup(self, groupname, basedn=None, args=None):
+		identity_values = self._resolve_identity_values(groupname, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.add_domaingroup(ident, basedn=basedn, args=args))
+			return all(result is True for result in results)
+		groupname = identity_values[0] if identity_values else None
 		parent_dn_entries = f"CN=Users,{self.root_dn}"
 		if basedn:
 			parent_dn_entries = basedn
@@ -4845,7 +5039,6 @@ displayName=New Group Policy Object
 			'servicePrincipalName'
 		]
 		
-		identity = args.identity if args and hasattr(args, 'identity') else identity
 		properties = args.properties if args and hasattr(args, 'properties') else properties
 		if properties is None:
 			properties = def_props
@@ -4853,6 +5046,8 @@ displayName=New Group Policy Object
 		no_cache = args.no_cache if args and hasattr(args, 'no_cache') else no_cache
 		no_vuln_check = args.no_vuln_check if args and hasattr(args, 'no_vuln_check') else no_vuln_check
 		raw = args.raw if args and hasattr(args, 'raw') else raw
+		if identity is None and args and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 
 		entries = self.get_domainobject(
 			identity=identity, 
@@ -4884,13 +5079,21 @@ displayName=New Group Policy Object
 		return entries
 
 	def add_domaindmsa(self, identity=None, supersededaccount=None, principals_allowed_to_retrieve_managed_password=None, dnshostname=None, hidden=False, basedn=None, args=None):
-		identity = args.identity if args and hasattr(args, 'identity') else identity
+		if identity is None and args and hasattr(args, 'identity'):
+			identity = args.identity
 		supersededaccount = args.supersededaccount if args and hasattr(args, 'supersededaccount') else supersededaccount
 		principals_allowed_to_retrieve_managed_password = args.principals_allowed_to_retrieve_managed_password if args and hasattr(args, 'principals_allowed_to_retrieve_managed_password') else principals_allowed_to_retrieve_managed_password
 		dnshostname = args.dnshostname if args and hasattr(args, 'dnshostname') and args.dnshostname else dnshostname
 		hidden = args.hidden if args and hasattr(args, 'hidden') else hidden
 		basedn = args.basedn if args and hasattr(args, 'basedn') else basedn
 		whitelisted_sids = ["S-1-1-0"]
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.add_domaindmsa(identity=ident, supersededaccount=supersededaccount, principals_allowed_to_retrieve_managed_password=principals_allowed_to_retrieve_managed_password, dnshostname=dnshostname, hidden=hidden, basedn=basedn, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 
 		if not identity:
 			raise ValueError("[Add-DomainDMSA] -Identity is required")
@@ -5033,8 +5236,16 @@ displayName=New Group Policy Object
 			return False
 
 	def remove_domaindmsa(self, identity=None, searchbase=None, args=None):
-		identity = args.identity if args and hasattr(args, 'identity') else identity
+		if identity is None and args and hasattr(args, 'identity'):
+			identity = args.identity
 		searchbase = args.searchbase if args and hasattr(args, 'searchbase') else searchbase
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.remove_domaindmsa(identity=ident, searchbase=searchbase, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		if not identity:
 			raise ValueError("[Remove-DomainDMSA] -Identity is required")
 
@@ -5284,6 +5495,13 @@ displayName=New Group Policy Object
 		return entries
 
 	def set_domainuserpassword(self, identity, accountpassword, oldpassword=None, args=None):
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.set_domainuserpassword(ident, accountpassword, oldpassword=oldpassword, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		entries = self.get_domainuser(identity=identity, properties=['distinguishedName','sAMAccountName'])
 		if len(entries) == 0:
 			logging.error(f'[Set-DomainUserPassword] No principal object found in domain')
@@ -5332,6 +5550,13 @@ displayName=New Group Policy Object
 				return False
 
 	def set_domaincomputerpassword(self, identity, accountpassword, oldpassword=None, args=None):
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.set_domaincomputerpassword(ident, accountpassword, oldpassword=oldpassword, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 		entries = self.get_domaincomputer(identity=identity, properties=[
 			'distinguishedName',
 			'sAMAccountName',
@@ -5389,6 +5614,13 @@ displayName=New Group Policy Object
 
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.set_domainobject(ident, clear=clear, _set=_set, append=append, remove=remove, searchbase=searchbase, sd_flag=sd_flag, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 
 		operation = ldap3.MODIFY_REPLACE
 		attr_clear = args.clear if hasattr(args,'clear') and args.clear else clear
@@ -5537,6 +5769,13 @@ displayName=New Group Policy Object
 	def set_domainobjectdn(self, identity, destination_dn, searchbase=None, sd_flag=None, args=None):
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
+		identity_values = self._resolve_identity_values(identity, args)
+		if len(identity_values) > 1:
+			results = []
+			for ident in identity_values:
+				results.append(self.set_domainobjectdn(ident, destination_dn, searchbase=searchbase, sd_flag=sd_flag, args=args))
+			return all(result is True for result in results)
+		identity = identity_values[0] if identity_values else None
 
 		# verify if the identity exists
 		targetobject = self.get_domainobject(identity=identity, searchbase=searchbase, properties=['distinguishedName'], sd_flag=sd_flag)
@@ -5695,9 +5934,11 @@ displayName=New Group Policy Object
 		return [entry]
 
 	def invoke_asreproast(self, identity=None, searchbase=None, args=None, no_cache=False):
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
+		if identity is None and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 		searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else searchbase
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
+		identity = self._resolve_identity_values(identity, args) or None
 
 		setattr(args, 'preauthnotrequired', True)
 		users = self.get_domainuser(
@@ -5722,11 +5963,13 @@ displayName=New Group Policy Object
 		return entries
 
 	def invoke_kerberoast(self, identity=None, target_domain=None, opsec=False, searchbase=None, args=None, no_cache=False):
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
+		if identity is None and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 		target_domain = args.server if hasattr(args, 'server') and args.server else target_domain
 		opsec = args.opsec if hasattr(args, 'opsec') and args.opsec else opsec
 		searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else searchbase
 		no_cache = args.no_cache if hasattr(args, 'no_cache') and args.no_cache else no_cache
+		identity = self._resolve_identity_values(identity, args) or None
 		setattr(args, 'spn', True)
 		setattr(args, 'enabled', True)
 
@@ -5752,7 +5995,7 @@ displayName=New Group Policy Object
 			enctype = 18 # aes
 			kdc_options = "0x40810000"
 
-		userspn = GetUserSPNs(self.username, self.password, self.domain, target_domain, self.args, identity=args.identity, options=kdc_options, encType=enctype, TGT=self.conn.get_TGT())
+		userspn = GetUserSPNs(self.username, self.password, self.domain, target_domain, self.args, identity=identity, options=kdc_options, encType=enctype, TGT=self.conn.get_TGT())
 		entries = userspn.run(entries)
 		return entries
 
@@ -7484,7 +7727,9 @@ displayName=New Group Policy Object
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties or def_prop
 		properties = def_prop if not properties else set(def_prop + properties)
 		
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
+		if identity is None and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
+		identity = self._resolve_identity_values(identity, args) or None
 		
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
@@ -7551,7 +7796,8 @@ displayName=New Group Policy Object
 			List of Exchange servers with their properties
 		"""
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
+		if identity is None and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 		
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.configuration_dn
@@ -7608,7 +7854,8 @@ displayName=New Group Policy Object
 			List of Exchange mailboxes with their properties
 		"""
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
+		if identity is None and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 		
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.root_dn
@@ -7650,7 +7897,8 @@ displayName=New Group Policy Object
 			List of Exchange mailbox databases with their properties
 		"""
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
+		if identity is None and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 		
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.configuration_dn
@@ -7696,7 +7944,8 @@ displayName=New Group Policy Object
 			List of Exchange objects with permission information and potential attack vectors
 		"""
 		properties = args.properties if hasattr(args, 'properties') and args.properties else properties
-		identity = args.identity if hasattr(args, 'identity') and args.identity else identity
+		if identity is None and hasattr(args, 'identity') and args.identity:
+			identity = args.identity
 		
 		if not searchbase:
 			searchbase = args.searchbase if hasattr(args, 'searchbase') and args.searchbase else self.configuration_dn

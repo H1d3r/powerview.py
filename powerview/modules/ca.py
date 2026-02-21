@@ -167,7 +167,11 @@ class CAEnum:
             include_sd=False
         ):
         if identity:
-            identity_filter = f"(|(cn={identity})(name={identity}))"
+            if isinstance(identity, list):
+                parts = [f"(|(cn={value})(name={value}))" for value in identity if value]
+                identity_filter = "(|" + "".join(parts) + ")" if parts else ""
+            else:
+                identity_filter = f"(|(cn={identity})(name={identity}))"
         else:
             identity_filter = ""
         enroll_filter = f"(&(objectClass=pKIEnrollmentService){identity_filter})"
@@ -423,7 +427,11 @@ class CAEnum:
         identity_filter = ""
 
         if identity:
-            identity_filter = f"(|(cn={identity})(displayName={identity}))"
+            if isinstance(identity, list):
+                parts = [f"(|(cn={value})(displayName={value}))" for value in identity if value]
+                identity_filter = "(|" + "".join(parts) + ")" if parts else ""
+            else:
+                identity_filter = f"(|(cn={identity})(displayName={identity}))"
 
         search_filter = f"(&(objectclass=pKICertificateTemplate){identity_filter})"
 
@@ -760,7 +768,7 @@ class PARSE_TEMPLATE:
                 vulns["ESC9"] = enrollable_sids
 
             # ESC13
-            if user_can_enroll and self.get_client_authentication() and self.template["msPKI-Certificate-Policy"] and self.linked_group:
+            if user_can_enroll and self.get_client_authentication() and self.template.get("msPKI-Certificate-Policy") and self.linked_group:
                 vulns["ESC13"] = enrollable_sids
 
             # ESC15

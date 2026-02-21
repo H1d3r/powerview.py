@@ -41,6 +41,3 @@ def add_operation(fqdn: str, dn: str,  attributes: dict):
     }
     request = LDAP_ADD_FSTRING.format(**add_vars)
     return request
-
-def add_response_to_dict(response):
-    pass

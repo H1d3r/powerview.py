@@ -209,7 +209,13 @@ class ExchangeEnum:
         search_filter = "(&(objectClass=msExchExchangeServer)(adminDisplayName=*))"
         
         if identity:
-            search_filter = f"(&{search_filter}(|(name={identity})(dNSHostName={identity})))"
+            if isinstance(identity, list):
+                parts = [f"(|(name={value})(dNSHostName={value}))" for value in identity if value]
+                identity_filter = "(|" + "".join(parts) + ")" if parts else ""
+            else:
+                identity_filter = f"(|(name={identity})(dNSHostName={identity}))"
+            if identity_filter:
+                search_filter = f"(&{search_filter}{identity_filter})"
         
         logging.debug(f"[Exchange] LDAP search base: {searchbase}")
         logging.debug(f"[Exchange] LDAP search filter: {search_filter}")
@@ -271,7 +277,13 @@ class ExchangeEnum:
         search_filter = "(&(objectCategory=person)(objectClass=user)(msExchMailboxGuid=*))"
         
         if identity:
-            search_filter = f"(&{search_filter}(|(name={identity})(sAMAccountName={identity})(mail={identity})))"
+            if isinstance(identity, list):
+                parts = [f"(|(name={value})(sAMAccountName={value})(mail={value}))" for value in identity if value]
+                identity_filter = "(|" + "".join(parts) + ")" if parts else ""
+            else:
+                identity_filter = f"(|(name={identity})(sAMAccountName={identity})(mail={identity}))"
+            if identity_filter:
+                search_filter = f"(&{search_filter}{identity_filter})"
         
         logging.debug(f"[Exchange] LDAP search base: {searchbase}")
         logging.debug(f"[Exchange] LDAP search filter: {search_filter}")
@@ -332,7 +344,13 @@ class ExchangeEnum:
         search_filter = "(objectClass=msExchMDB)"
         
         if identity:
-            search_filter = f"(&{search_filter}(|(name={identity})(msExchDatabaseName={identity})))"
+            if isinstance(identity, list):
+                parts = [f"(|(name={value})(msExchDatabaseName={value}))" for value in identity if value]
+                identity_filter = "(|" + "".join(parts) + ")" if parts else ""
+            else:
+                identity_filter = f"(|(name={identity})(msExchDatabaseName={identity}))"
+            if identity_filter:
+                search_filter = f"(&{search_filter}{identity_filter})"
         
         logging.debug(f"[Exchange] LDAP search base: {searchbase}")
         logging.debug(f"[Exchange] LDAP search filter: {search_filter}")
@@ -492,7 +510,13 @@ class ExchangeEnum:
         search_filter = "(objectClass=msExchVirtualDirectory)"
         
         if identity:
-            search_filter = f"(&{search_filter}(name={identity}))"
+            if isinstance(identity, list):
+                parts = [f"(name={value})" for value in identity if value]
+                identity_filter = "(|" + "".join(parts) + ")" if parts else ""
+            else:
+                identity_filter = f"(name={identity})"
+            if identity_filter:
+                search_filter = f"(&{search_filter}{identity_filter})"
         
         logging.debug(f"[Exchange] LDAP search base: {searchbase}")
         logging.debug(f"[Exchange] LDAP search filter: {search_filter}")

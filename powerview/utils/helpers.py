@@ -101,6 +101,53 @@ def escape_filter_chars_except_asterisk(filter_str):
 	escaped_chars = ''.join(c if c == '*' else escape_filter_chars(c) for c in filter_str)
 	return escaped_chars
 
+def expand_identity_values(value):
+	if value is None:
+		return []
+	if isinstance(value, list):
+		values = []
+		for item in value:
+			values.extend(expand_identity_values(item))
+		return values
+	if not isinstance(value, str):
+		return [value]
+	value = value.strip()
+	if not value:
+		return []
+	if value.startswith("@"):
+		path = value[1:]
+		content = read_file(path, mode="r")
+		values = []
+		for line in content.splitlines():
+			line = line.strip()
+			if not line or line.startswith("#") or line.startswith(";"):
+				continue
+			if is_dn(line):
+				values.append(line)
+			else:
+				values.extend([part.strip() for part in line.split(",") if part.strip()])
+		return values
+	if is_dn(value):
+		return [value]
+	return [part.strip() for part in value.split(",") if part.strip()]
+
+def parse_identity_list(value):
+	values = expand_identity_values(value)
+	if not values:
+		return None
+	escaped = []
+	seen = set()
+	for item in values:
+		if not isinstance(item, str):
+			item = str(item)
+		if item in seen:
+			continue
+		seen.add(item)
+		escaped.append(escape_filter_chars_except_asterisk(item))
+	if len(escaped) == 1:
+		return escaped[0]
+	return escaped
+
 def get_user_sids(domain_sid, objectsid, ldap_session=None):
 	user_sids = set()  # Using a set for faster lookups and deduplication
 

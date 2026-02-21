@@ -5,14 +5,16 @@ import logging
 from impacket import version
 from powerview.utils.completer import COMMANDS
 from powerview.utils.colors import bcolors, Gradient
-from powerview.utils.helpers import escape_filter_chars_except_asterisk, parse_hashes, parse_username, parse_identity
+from powerview.utils.helpers import escape_filter_chars_except_asterisk, parse_hashes, parse_username, parse_identity, parse_identity_list
 from powerview._version import BANNER,__version__
 
 # https://stackoverflow.com/questions/14591168/argparse-dont-show-usage-on-h
 class PowerViewParser(argparse.ArgumentParser):
 	def error(self, message):
-		print(message)
-		sys.exit(0)
+		if getattr(self, "exit_on_error", True):
+			print(message)
+			sys.exit(0)
+		raise argparse.ArgumentError(None, message)
 
 def arg_parse():
 	parser = PowerViewParser(description = f"Python alternative to SharpSploit's PowerView script, version {bcolors.OKBLUE + __version__ + bcolors.ENDC}")
@@ -127,7 +129,6 @@ class Helper:
 				web_auth_user, web_auth_password = web_auth.split(':')
 			except Exception:
 				raise ValueError("Invalid web auth string")
-				sys.exit(1)
 		return {'web_auth_user': web_auth_user, 'web_auth_password': web_auth_password}
 
 def powerview_arg_parse(cmd):
@@ -152,7 +153,7 @@ def powerview_arg_parse(cmd):
 
 	#domain
 	get_domain_parser = subparsers.add_parser('Get-Domain', exit_on_error=False)
-	get_domain_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domain_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domain_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domain_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domain_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -170,7 +171,7 @@ def powerview_arg_parse(cmd):
 	
 	#domainobject
 	get_domainobject_parser = subparsers.add_parser('Get-DomainObject', aliases=['Get-ADObject'] ,exit_on_error=False)
-	get_domainobject_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domainobject_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domainobject_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domainobject_parser.add_argument('-IncludeDeleted', action='store_true', default=False, dest='include_deleted')
 	get_domainobject_parser.add_argument('-Deleted', action='store_true', default=False, dest='deleted')
@@ -190,7 +191,7 @@ def powerview_arg_parse(cmd):
 
 	#domainobjectowner
 	get_domainobjectowner_parser = subparsers.add_parser('Get-DomainObjectOwner', aliases=['Get-ObjectOwner'] ,exit_on_error=False)
-	get_domainobjectowner_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domainobjectowner_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domainobjectowner_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domainobjectowner_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_domainobjectowner_parser.add_argument('-Server', action='store', dest='server')
@@ -207,7 +208,7 @@ def powerview_arg_parse(cmd):
 
 	#domainobjectacl
 	get_domainobjectacl_parser = subparsers.add_parser('Get-DomainObjectAcl', aliases=['Get-ObjectAcl'] ,exit_on_error=False)
-	get_domainobjectacl_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domainobjectacl_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domainobjectacl_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domainobjectacl_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_domainobjectacl_parser.add_argument('-Server', action='store', dest='server')
@@ -226,7 +227,7 @@ def powerview_arg_parse(cmd):
 	
 	# group
 	get_domaingroup_parser = subparsers.add_parser('Get-DomainGroup', exit_on_error=False)
-	get_domaingroup_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaingroup_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domaingroup_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domaingroup_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domaingroup_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -270,7 +271,7 @@ def powerview_arg_parse(cmd):
 
 	#groupmember
 	get_domaingroupmember_parser = subparsers.add_parser('Get-DomainGroupMember', exit_on_error=False)
-	get_domaingroupmember_parser.add_argument('-Identity', action='store', default='*', required=True, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaingroupmember_parser.add_argument('-Identity', action='store', default='*', required=True, dest='identity', type=parse_identity_list)
 	get_domaingroupmember_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domaingroupmember_parser.add_argument('-Server', action='store', dest='server')
 	get_domaingroupmember_parser.add_argument('-Select', action='store', dest='select', type=Helper.parse_select)
@@ -286,7 +287,7 @@ def powerview_arg_parse(cmd):
 
 	#user
 	get_domainuser_parser = subparsers.add_parser('Get-DomainUser', exit_on_error=False)
-	get_domainuser_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domainuser_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domainuser_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domainuser_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domainuser_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -301,7 +302,7 @@ def powerview_arg_parse(cmd):
 	get_domainuser_parser.add_argument('-Department', action='store', dest='department')
 	get_domainuser_parser.add_argument('-SPN', action='store_true', default=False, dest='spn')
 	get_domainuser_parser.add_argument('-AdminCount', action='store_true', default=False, dest='admincount')
-	get_domainuser_parser.add_argument('-Lockout', action='store_true', default=False, dest='lockout')
+	get_domainuser_parser.add_argument('-LockedOut', action='store_true', default=False, dest='lockedout')
 	get_domainuser_parser.add_argument('-PassExpired', action='store_true', default=False, dest='password_expired')
 	get_domainuser_parser.add_argument('-PassNotRequired', action='store_true', default=False, dest='passnotrequired')
 	get_domainuser_parser.add_argument('-RBCD', action='store_true', default=False, dest='rbcd')
@@ -323,7 +324,7 @@ def powerview_arg_parse(cmd):
 	get_localuser_group = get_localuser_parser.add_mutually_exclusive_group()
 	get_localuser_group.add_argument('-Computer', action='store', const=None, dest='computer', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_localuser_group.add_argument('-ComputerName', action='store', const=None, dest='computername', type=lambda value: escape_filter_chars_except_asterisk(value))
-	get_localuser_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_localuser_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_localuser_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_localuser_parser.add_argument('-TableView', nargs='?', const='default', default='', dest='tableview', help="Format the output as a table. Options: 'md', 'csv'. Defaults to standard table if no value is provided.", type=Helper.parse_tableview)
 	get_localuser_parser.add_argument('-SortBy', action='store', dest='sort_by')
@@ -334,7 +335,7 @@ def powerview_arg_parse(cmd):
 
 	#computers
 	get_domaincomputer_parser = subparsers.add_parser('Get-DomainComputer', exit_on_error=False)
-	get_domaincomputer_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaincomputer_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domaincomputer_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domaincomputer_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domaincomputer_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -371,7 +372,7 @@ def powerview_arg_parse(cmd):
 
 	#domain controller
 	get_domaincontroller_parser = subparsers.add_parser('Get-DomainController', exit_on_error=False)
-	get_domaincontroller_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaincontroller_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domaincontroller_parser.add_argument('-ResolveSIDs', action='store_true', default=False, dest='resolvesids')
 	get_domaincontroller_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_domaincontroller_parser.add_argument('-Properties',action='store', dest='properties', type=Helper.parse_properties)
@@ -390,7 +391,7 @@ def powerview_arg_parse(cmd):
 
 	#gpo
 	get_domaingpo_parser = subparsers.add_parser('Get-DomainGPO', exit_on_error=False)
-	get_domaingpo_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaingpo_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domaingpo_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domaingpo_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domaingpo_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -408,7 +409,7 @@ def powerview_arg_parse(cmd):
 
 	#gpo local group / restricted groups
 	get_domaingpolocalgroup_parser = subparsers.add_parser('Get-DomainGPOLocalGroup', aliases=['Get-GPOLocalGroup'], exit_on_error=False)
-	get_domaingpolocalgroup_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaingpolocalgroup_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domaingpolocalgroup_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domaingpolocalgroup_parser.add_argument('-Server', action='store', dest='server')
 	get_domaingpolocalgroup_parser.add_argument('-Select', action='store', dest='select', type=Helper.parse_select)
@@ -421,7 +422,7 @@ def powerview_arg_parse(cmd):
 
 	# gposettings
 	get_domaingposettings_parser = subparsers.add_parser('Get-DomainGPOSettings', aliases=['Get-GPOSettings'], exit_on_error=False)
-	get_domaingposettings_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaingposettings_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domaingposettings_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domaingposettings_parser.add_argument('-Server', action='store', dest='server')
 	get_domaingposettings_parser.add_argument('-Select', action='store', dest='select', type=Helper.parse_select)
@@ -437,7 +438,7 @@ def powerview_arg_parse(cmd):
 
 	# OU
 	get_domainou_parser = subparsers.add_parser('Get-DomainOU', exit_on_error=False)
-	get_domainou_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domainou_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domainou_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domainou_parser.add_argument('-GPLink', action='store', dest='gplink')
 	get_domainou_parser.add_argument('-Writable', action='store_true', default=False, dest='writable')
@@ -458,7 +459,7 @@ def powerview_arg_parse(cmd):
 
 	# Find DNS Zone
 	get_domaindnszone_parser = subparsers.add_parser('Get-DomainDNSZone', exit_on_error=False)
-	get_domaindnszone_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaindnszone_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	base_group = get_domaindnszone_parser.add_mutually_exclusive_group()
 	base_group.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	base_group.add_argument('-Legacy', action='store_true', default=False, dest='legacy')
@@ -479,7 +480,7 @@ def powerview_arg_parse(cmd):
 	# Get DNS Record
 	get_domaindnsrecord_parser = subparsers.add_parser('Get-DomainDNSRecord', exit_on_error=False)
 	get_domaindnsrecord_parser.add_argument('-ZoneName', action='store', dest='zonename')
-	get_domaindnsrecord_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaindnsrecord_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	base_group = get_domaindnsrecord_parser.add_mutually_exclusive_group()
 	base_group.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	base_group.add_argument('-Legacy', action='store_true', default=False, dest='legacy')
@@ -500,7 +501,7 @@ def powerview_arg_parse(cmd):
 
 	# Get SCCM
 	get_domainsccm_parser = subparsers.add_parser('Get-DomainSCCM', aliases=['Get-SCCM'], exit_on_error=False)
-	get_domainsccm_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domainsccm_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domainsccm_parser.add_argument('-CheckDatalib', action='store_true', default=False, dest='check_datalib')
 	get_domainsccm_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domainsccm_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
@@ -519,7 +520,7 @@ def powerview_arg_parse(cmd):
 
 	# Get-DomainGMSA
 	get_domaingmsa_parser = subparsers.add_parser('Get-DomainGMSA', aliases=['Get-GMSA'], exit_on_error=False)
-	get_domaingmsa_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaingmsa_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domaingmsa_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domaingmsa_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domaingmsa_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -537,7 +538,7 @@ def powerview_arg_parse(cmd):
 
 	# Get-DomainDMSA
 	get_domaindmsa_parser = subparsers.add_parser('Get-DomainDMSA', aliases=['Get-DMSA'], exit_on_error=False)
-	get_domaindmsa_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaindmsa_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domaindmsa_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domaindmsa_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domaindmsa_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -555,7 +556,7 @@ def powerview_arg_parse(cmd):
 
 	# Get-DomainRBCD
 	get_domainrbcd_parser = subparsers.add_parser('Get-DomainRBCD', aliases=['Get-RBCD'], exit_on_error=False)
-	get_domainrbcd_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domainrbcd_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domainrbcd_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domainrbcd_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_domainrbcd_parser.add_argument('-Server', action='store', dest='server')
@@ -572,7 +573,7 @@ def powerview_arg_parse(cmd):
 
 	# Get-DomainWDS (Windows Deployment Services)
 	get_domainwds_parser = subparsers.add_parser('Get-DomainWDS', aliases=['Get-WDS'], exit_on_error=False)
-	get_domainwds_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domainwds_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domainwds_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domainwds_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domainwds_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -590,7 +591,7 @@ def powerview_arg_parse(cmd):
 
 	# Find CAs
 	get_domainca_parser = subparsers.add_parser('Get-DomainCA', aliases=['Get-CA'], exit_on_error=False)
-	get_domainca_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domainca_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domainca_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domainca_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_domainca_parser.add_argument('-Server', action='store', dest='server')
@@ -608,7 +609,7 @@ def powerview_arg_parse(cmd):
 
 	# Find CA Templates
 	get_domaincatemplate_parser = subparsers.add_parser('Get-DomainCATemplate', aliases=['Get-CATemplate'], exit_on_error=False)
-	get_domaincatemplate_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaincatemplate_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domaincatemplate_parser.add_argument('-Enabled', action='store_true', dest='enabled')
 	get_domaincatemplate_parser.add_argument('-Vulnerable', action='store_true', dest='vulnerable')
 	get_domaincatemplate_parser.add_argument('-ResolveSIDs', action='store_true', dest='resolve_sids')
@@ -627,7 +628,7 @@ def powerview_arg_parse(cmd):
 	get_domaincatemplate_parser.add_argument('-Raw', action='store_true', default=False, dest='raw')
 
 	remove_domaincatemplate_parser = subparsers.add_parser('Remove-DomainCATemplate', aliases=['Remove-CATemplate'], exit_on_error=False)
-	remove_domaincatemplate_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	remove_domaincatemplate_parser.add_argument('-Identity', action='store', required=True, dest='identity', type=parse_identity_list)
 	remove_domaincatemplate_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	remove_domaincatemplate_parser.add_argument('-Server', action='store', dest='server')
 	remove_domaincatemplate_parser.add_argument('-Select', action='store', dest='select', type=Helper.parse_select)
@@ -638,7 +639,7 @@ def powerview_arg_parse(cmd):
 
 	# add ca certificate template
 	add_domaincatemplate_parser = subparsers.add_parser('Add-DomainCATemplate', aliases=['Add-CATemplate'], exit_on_error=False)
-	add_domaincatemplate_parser.add_argument('-DisplayName', action='store', dest='displayname', type=lambda value: escape_filter_chars_except_asterisk(value))
+	add_domaincatemplate_parser.add_argument('-DisplayName', action='store', required=True, dest='displayname', type=lambda value: escape_filter_chars_except_asterisk(value))
 	add_domaincatemplate_parser.add_argument('-Name', action='store', dest='name', type=lambda value: escape_filter_chars_except_asterisk(value))
 	add_domaincatemplate_parser.add_argument('-Duplicate', action='store', dest='duplicate')
 	add_domaincatemplate_parser.add_argument('-Server', action='store', dest='server')
@@ -646,16 +647,16 @@ def powerview_arg_parse(cmd):
 
 	# add domain ca template acl
 	add_domaincatemplateacl_parser = subparsers.add_parser('Add-DomainCATemplateAcl', aliases=['Add-CATemplateAcl'], exit_on_error=False)
-	add_domaincatemplateacl_parser.add_argument('-Template', action='store', const=None, dest='template', type=lambda value: escape_filter_chars_except_asterisk(value))
-	add_domaincatemplateacl_parser.add_argument('-PrincipalIdentity', action='store', const=None, dest='principalidentity', type=lambda value: escape_filter_chars_except_asterisk(value))
-	add_domaincatemplateacl_parser.add_argument('-Rights', action='store', const=None, dest='rights', choices=['all', 'enroll','write'], type = str.lower)
+	add_domaincatemplateacl_parser.add_argument('-Template', action='store', required=True, const=None, dest='template', type=lambda value: escape_filter_chars_except_asterisk(value))
+	add_domaincatemplateacl_parser.add_argument('-PrincipalIdentity', action='store', required=True, const=None, dest='principalidentity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	add_domaincatemplateacl_parser.add_argument('-Rights', action='store', required=True, const=None, dest='rights', choices=['all', 'enroll','write'], type = str.lower)
 	add_domaincatemplateacl_parser.add_argument('-Server', action='store', dest='server')
 	add_domaincatemplateacl_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# get named pipes
 	get_namedpipes_parser = subparsers.add_parser('Get-NamedPipes', exit_on_error=False)
 	get_namedpipes_parser.add_argument('-Name', action='store', dest='name')
-	get_namedpipes_group = get_namedpipes_parser.add_mutually_exclusive_group()
+	get_namedpipes_group = get_namedpipes_parser.add_mutually_exclusive_group(required=True)
 	get_namedpipes_group.add_argument('-Computer', action='store', const=None, dest='computer', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_namedpipes_group.add_argument('-ComputerName', action='store', const=None, dest='computername', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_namedpipes_parser.add_argument('-TableView', nargs='?', const='default', default='', dest='tableview', help="Format the output as a table. Options: 'md', 'csv'. Defaults to standard table if no value is provided.", type=Helper.parse_tableview)
@@ -667,7 +668,7 @@ def powerview_arg_parse(cmd):
 
 	# shares
 	get_netshare_parser = subparsers.add_parser('Get-NetShare', exit_on_error=False)
-	get_netshare_group = get_netshare_parser.add_mutually_exclusive_group()
+	get_netshare_group = get_netshare_parser.add_mutually_exclusive_group(required=True)
 	get_netshare_group.add_argument('-Computer', action='store', const=None, dest='computer', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_netshare_group.add_argument('-ComputerName', action='store', const=None, dest='computername', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_netshare_parser.add_argument('-TableView', nargs='?', const='default', default='', dest='tableview', help="Format the output as a table. Options: 'md', 'csv'. Defaults to standard table if no value is provided.", type=Helper.parse_tableview)
@@ -677,7 +678,7 @@ def powerview_arg_parse(cmd):
 
 	# get-regloggedon
 	get_regloggedon_parser = subparsers.add_parser('Get-RegLoggedOn', exit_on_error=False)
-	get_regloggedon_group = get_regloggedon_parser.add_mutually_exclusive_group()
+	get_regloggedon_group = get_regloggedon_parser.add_mutually_exclusive_group(required=True)
 	get_regloggedon_group.add_argument('-Computer', action='store', const=None, dest='computer', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_regloggedon_group.add_argument('-ComputerName', action='store', const=None, dest='computername', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_regloggedon_parser.add_argument('-TableView', nargs='?', const='default', default='', dest='tableview', help="Format the output as a table. Options: 'md', 'csv'. Defaults to standard table if no value is provided.", type=Helper.parse_tableview)
@@ -688,7 +689,7 @@ def powerview_arg_parse(cmd):
 
 	# get-netcomputerinfo
 	get_netcomputerinfo_parser = subparsers.add_parser('Get-NetComputerInfo', exit_on_error=False)
-	get_netcomputerinfo_group = get_netcomputerinfo_parser.add_mutually_exclusive_group()
+	get_netcomputerinfo_group = get_netcomputerinfo_parser.add_mutually_exclusive_group(required=True)
 	get_netcomputerinfo_group.add_argument('-Computer', action='store', default=None, dest='computer', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_netcomputerinfo_group.add_argument('-ComputerName', action='store', default=None, dest='computername', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_netcomputerinfo_parser.add_argument('-Username', action='store', default=None, dest='username', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -883,7 +884,7 @@ def powerview_arg_parse(cmd):
 	# get-netservice
 	get_netservice_parser = subparsers.add_parser('Get-NetService', exit_on_error=False)
 	get_netservice_parser.add_argument('-Name', action='store', dest='name', type=lambda value: escape_filter_chars_except_asterisk(value))
-	get_netservice_group = get_netservice_parser.add_mutually_exclusive_group()
+	get_netservice_group = get_netservice_parser.add_mutually_exclusive_group(required=True)
 	get_netservice_group.add_argument('-Computer', action='store', const=None, dest='computer', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_netservice_group.add_argument('-ComputerName', action='store', const=None, dest='computername', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_netservice_status_group = get_netservice_parser.add_mutually_exclusive_group(required=False)
@@ -952,7 +953,7 @@ def powerview_arg_parse(cmd):
 
 	# invoke asreproast
 	invoke_asreproast_parser = subparsers.add_parser('Invoke-ASREPRoast', exit_on_error=False)
-	invoke_asreproast_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	invoke_asreproast_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	invoke_asreproast_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	invoke_asreproast_parser.add_argument('-Server', action='store', dest='server')
 	invoke_asreproast_parser.add_argument('-Select', action='store', dest='select', type=Helper.parse_select)
@@ -965,7 +966,7 @@ def powerview_arg_parse(cmd):
 	
 	# invoke kerberoast
 	invoke_kerberoast_parser = subparsers.add_parser('Invoke-Kerberoast', exit_on_error=False)
-	invoke_kerberoast_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	invoke_kerberoast_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	invoke_kerberoast_parser.add_argument('-Opsec', action='store_true', default=False, dest='opsec')
 	invoke_kerberoast_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	invoke_kerberoast_parser.add_argument('-Server', action='store', dest='server')
@@ -1006,7 +1007,7 @@ def powerview_arg_parse(cmd):
 
 	# get exchange server
 	get_exchangeserver_parser = subparsers.add_parser('Get-ExchangeServer', exit_on_error=False)
-	get_exchangeserver_parser.add_argument('-Identity', action='store', const=None, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_exchangeserver_parser.add_argument('-Identity', action='store', const=None, dest='identity', type=parse_identity_list)
 	get_exchangeserver_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_exchangeserver_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_exchangeserver_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -1023,7 +1024,7 @@ def powerview_arg_parse(cmd):
 
 	# get exchange mailbox
 	get_exchangemailbox_parser = subparsers.add_parser('Get-ExchangeMailbox', exit_on_error=False)
-	get_exchangemailbox_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_exchangemailbox_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_exchangemailbox_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_exchangemailbox_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_exchangemailbox_parser.add_argument('-Server', action='store', dest='server')
@@ -1040,7 +1041,7 @@ def powerview_arg_parse(cmd):
 
 	# get exchange database
 	get_exchangedatabase_parser = subparsers.add_parser('Get-ExchangeDatabase', exit_on_error=False)
-	get_exchangedatabase_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_exchangedatabase_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_exchangedatabase_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_exchangedatabase_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_exchangedatabase_parser.add_argument('-Server', action='store', dest='server')
@@ -1057,7 +1058,7 @@ def powerview_arg_parse(cmd):
 
 	# unlock_adaccount
 	unlock_adaccount_parser = subparsers.add_parser('Unlock-ADAccount',aliases=['Unlock-ADAccount'], exit_on_error=False)
-	unlock_adaccount_parser.add_argument('-Identity', action='store', const=None, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	unlock_adaccount_parser.add_argument('-Identity', action='store', required=True, const=None, dest='identity', type=parse_identity_list)
 	unlock_adaccount_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	unlock_adaccount_parser.add_argument('-Server', action='store', dest='server')
 	unlock_adaccount_parser.add_argument('-OutFile', action='store', dest='outfile')
@@ -1084,7 +1085,7 @@ def powerview_arg_parse(cmd):
 
 	# enable adaccount
 	enable_adaccount_parser = subparsers.add_parser('Enable-ADAccount', aliases=['Enable-ADAccount'], exit_on_error=False)
-	enable_adaccount_parser.add_argument('-Identity', action='store', const=None, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	enable_adaccount_parser.add_argument('-Identity', action='store', required=True, const=None, dest='identity', type=parse_identity_list)
 	enable_adaccount_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	enable_adaccount_parser.add_argument('-Server', action='store', dest='server')
 	enable_adaccount_parser.add_argument('-OutFile', action='store', dest='outfile')
@@ -1097,7 +1098,7 @@ def powerview_arg_parse(cmd):
 
 	# disable adaccount
 	disable_adaccount_parser = subparsers.add_parser('Disable-ADAccount', aliases=['Disable-ADAccount'], exit_on_error=False)
-	disable_adaccount_parser.add_argument('-Identity', action='store', const=None, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	disable_adaccount_parser.add_argument('-Identity', action='store', required=True, const=None, dest='identity', type=parse_identity_list)
 	disable_adaccount_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	disable_adaccount_parser.add_argument('-Server', action='store', dest='server')
 	disable_adaccount_parser.add_argument('-OutFile', action='store', dest='outfile')
@@ -1105,7 +1106,7 @@ def powerview_arg_parse(cmd):
 
 	#trust
 	get_domaintrust_parser = subparsers.add_parser('Get-DomainTrust', exit_on_error=False)
-	get_domaintrust_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaintrust_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domaintrust_parser.add_argument('-LDAPFilter', action='store', dest='ldapfilter')
 	get_domaintrust_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domaintrust_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -1123,7 +1124,7 @@ def powerview_arg_parse(cmd):
 
 	#trust key
 	get_domaintrustkey_parser = subparsers.add_parser('Get-DomainTrustKey', aliases=['Get-TrustKey'], exit_on_error=False)
-	get_domaintrustkey_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	get_domaintrustkey_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list)
 	get_domaintrustkey_parser.add_argument('-Properties', action='store', dest='properties', type=Helper.parse_properties)
 	get_domaintrustkey_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	get_domaintrustkey_parser.add_argument('-Server', action='store', dest='server')
@@ -1140,41 +1141,41 @@ def powerview_arg_parse(cmd):
 
 	# convert from uac value
 	convertfrom_uacvalue_parser = subparsers.add_parser('ConvertFrom-UACValue' ,exit_on_error=False)
-	convertfrom_uacvalue_parser.add_argument('-Value', action='store', dest='value')
+	convertfrom_uacvalue_parser.add_argument('-Value', action='store', required=True, dest='value')
 	convertfrom_uacvalue_parser.add_argument('-TableView', nargs='?', const='default', default='', dest='tableview', help="Format the output as a table. Options: 'md', 'csv'. Defaults to standard table if no value is provided.", type=Helper.parse_tableview)
 	convertfrom_uacvalue_parser.add_argument('-OutFile', action='store', dest='outfile')
 	
 	# convert from sid
 	convertfrom_sid_parser = subparsers.add_parser('ConvertFrom-SID' ,exit_on_error=False)
-	convertfrom_sid_parser.add_argument('-ObjectSID', action='store', dest='objectsid')
+	convertfrom_sid_parser.add_argument('-ObjectSID', action='store', required=True, dest='objectsid')
 	convertfrom_sid_parser.add_argument('-Server', action='store', dest='server')
 	convertfrom_sid_parser.add_argument('-OutFile', action='store', dest='outfile')
 	convertfrom_sid_parser.add_argument('-NoCache', action='store_true', default=False, dest='no_cache')
 
 	# add domain group members
 	add_domaingroupmember_parser = subparsers.add_parser('Add-DomainGroupMember',aliases=['Add-GroupMember'], exit_on_error=False)
-	add_domaingroupmember_parser.add_argument('-Identity', action='store', const=None, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
-	add_domaingroupmember_parser.add_argument('-Members', action='store', const=None, dest='members')
+	add_domaingroupmember_parser.add_argument('-Identity', action='store', required=True, const=None, dest='identity', type=parse_identity_list)
+	add_domaingroupmember_parser.add_argument('-Members', action='store', required=True, const=None, dest='members')
 	add_domaingroupmember_parser.add_argument('-Server', action='store', dest='server')
 	add_domaingroupmember_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# remove domain object
 	remove_domainobject_parser = subparsers.add_parser('Remove-DomainObject',aliases=['Remove-ADObject'], exit_on_error=False)
-	remove_domainobject_parser.add_argument('-Identity', action='store', const=None, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	remove_domainobject_parser.add_argument('-Identity', action='store', required=True, const=None, dest='identity', type=parse_identity_list)
 	remove_domainobject_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	remove_domainobject_parser.add_argument('-Server', action='store', dest='server')
 	remove_domainobject_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# remove domain group members
 	remove_domaingroupmember_parser = subparsers.add_parser('Remove-DomainGroupMember',aliases=['Remove-GroupMember'], exit_on_error=False)
-	remove_domaingroupmember_parser.add_argument('-Identity', action='store', const=None, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
-	remove_domaingroupmember_parser.add_argument('-Members', action='store', const=None, dest='members', type=lambda value: escape_filter_chars_except_asterisk(value))
+	remove_domaingroupmember_parser.add_argument('-Identity', action='store', required=True, const=None, dest='identity', type=parse_identity_list)
+	remove_domaingroupmember_parser.add_argument('-Members', action='store', required=True, const=None, dest='members', type=lambda value: escape_filter_chars_except_asterisk(value))
 	remove_domaingroupmember_parser.add_argument('-Server', action='store', dest='server')
 	remove_domaingroupmember_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# add domain ou
 	add_domainou_parser = subparsers.add_parser('Add-DomainOU', aliases=['Add-OU'], exit_on_error=False)
-	add_domainou_parser.add_argument('-Identity', action='store', const=None, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	add_domainou_parser.add_argument('-Identity', action='store', required=True, const=None, dest='identity', type=parse_identity_list)
 	add_domainou_parser.add_argument('-ProtectedFromAccidentalDeletion', action='store_true', default=False, dest='protectedfromaccidentaldeletion')
 	add_domainou_parser.add_argument('-BaseDN', action='store', const=None, dest='basedn', help="[Optional] (Default: root DN)")
 	add_domainou_parser.add_argument('-Server', action='store', dest='server')
@@ -1182,7 +1183,7 @@ def powerview_arg_parse(cmd):
 
 	# add domain gpo
 	add_domaingpo_parser = subparsers.add_parser('Add-DomainGPO', aliases=['Add-GPO'], exit_on_error=False)
-	add_domaingpo_parser.add_argument('-Identity', action='store', const=None, dest='identity', type=str)
+	add_domaingpo_parser.add_argument('-Identity', action='store', required=True, const=None, dest='identity', type=parse_identity_list)
 	add_domaingpo_parser.add_argument('-Description', action='store', dest='description', type=str)
 	add_domaingpo_parser.add_argument('-LinkTo', action='store', dest='linkto', type=str)
 	add_domaingpo_parser.add_argument('-BaseDN', action='store', const=None, dest='basedn', help="[Optional] (Default: root DN)")
@@ -1191,7 +1192,7 @@ def powerview_arg_parse(cmd):
 
 	# remove domain ou
 	remove_domainou_parser = subparsers.add_parser('Remove-DomainOU', aliases=['Remove-OU'], exit_on_error=False)
-	remove_domainou_parser.add_argument('-Identity', action='store', const=None, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	remove_domainou_parser.add_argument('-Identity', action='store', required=True, const=None, dest='identity', type=parse_identity_list)
 	remove_domainou_parser.add_argument('-DistinguishedName', action='store', const=None, dest='distinguishedname')
 	remove_domainou_parser.add_argument('-Server', action='store', dest='server')
 	remove_domainou_parser.add_argument('-OutFile', action='store', dest='outfile')
@@ -1230,7 +1231,7 @@ def powerview_arg_parse(cmd):
 
 	# Add-DomainGMSA
 	add_domaingmsa_parser = subparsers.add_parser('Add-DomainGMSA', aliases=['Add-GMSA'], exit_on_error=False)
-	add_domaingmsa_parser.add_argument('-Identity', action='store', dest='identity', required=True, type=lambda value: escape_filter_chars_except_asterisk(value))
+	add_domaingmsa_parser.add_argument('-Identity', action='store', dest='identity', required=True, type=parse_identity_list)
 	add_domaingmsa_parser.add_argument('-PrincipalsAllowedToRetrieveManagedPassword', action='store', dest='principals_allowed_to_retrieve_managed_password', type=lambda value: escape_filter_chars_except_asterisk(value))
 	add_domaingmsa_parser.add_argument('-DNSHostName', action='store', dest='dnshostname', type=lambda value: escape_filter_chars_except_asterisk(value))
 	add_domaingmsa_parser.add_argument('-BaseDN', action='store', dest='basedn', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -1240,14 +1241,14 @@ def powerview_arg_parse(cmd):
 
 	# Remove-DomainGMSA
 	remove_domaingmsa_parser = subparsers.add_parser('Remove-DomainGMSA', aliases=['Remove-GMSA'], exit_on_error=False)
-	remove_domaingmsa_parser.add_argument('-Identity', action='store', dest='identity', required=True, type=lambda value: escape_filter_chars_except_asterisk(value))
+	remove_domaingmsa_parser.add_argument('-Identity', action='store', dest='identity', required=True, type=parse_identity_list)
 	remove_domaingmsa_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	remove_domaingmsa_parser.add_argument('-Server', action='store', dest='server')
 	remove_domaingmsa_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# add domain dmsa (delegated managed service account)
 	add_domaindmsa_parser = subparsers.add_parser('Add-DomainDMSA', aliases=['Add-DMSA'], exit_on_error=False)
-	add_domaindmsa_parser.add_argument('-Identity', action='store', required=True, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	add_domaindmsa_parser.add_argument('-Identity', action='store', required=True, dest='identity', type=parse_identity_list)
 	add_domaindmsa_parser.add_argument('-SupersededAccount', action='store', dest='supersededaccount', type=lambda value: escape_filter_chars_except_asterisk(value))
 	add_domaindmsa_parser.add_argument('-PrincipalsAllowedToRetrieveManagedPassword', action='store', dest='principals_allowed_to_retrieve_managed_password', type=lambda value: escape_filter_chars_except_asterisk(value))
 	add_domaindmsa_parser.add_argument('-DNSHostName', action='store', dest='dnshostname', type=lambda value: escape_filter_chars_except_asterisk(value))
@@ -1259,7 +1260,7 @@ def powerview_arg_parse(cmd):
 
 	# remove domain dmsa
 	remove_domaindmsa_parser = subparsers.add_parser('Remove-DomainDMSA', aliases=['Remove-DMSA'], exit_on_error=False)
-	remove_domaindmsa_parser.add_argument('-Identity', action='store', required=True, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	remove_domaindmsa_parser.add_argument('-Identity', action='store', required=True, dest='identity', type=parse_identity_list)
 	remove_domaindmsa_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	remove_domaindmsa_parser.add_argument('-Server', action='store', dest='server')
 	remove_domaindmsa_parser.add_argument('-OutFile', action='store', dest='outfile')
@@ -1267,8 +1268,8 @@ def powerview_arg_parse(cmd):
 	# add dns record
 	add_domaindnsrecord_parser = subparsers.add_parser('Add-DomainDNSRecord', exit_on_error=False)
 	add_domaindnsrecord_parser.add_argument('-ZoneName', action='store', dest='zonename')
-	add_domaindnsrecord_parser.add_argument('-RecordName', action='store', dest='recordname')
-	add_domaindnsrecord_parser.add_argument('-RecordAddress', action='store', dest='recordaddress')
+	add_domaindnsrecord_parser.add_argument('-RecordName', action='store', required=True, dest='recordname')
+	add_domaindnsrecord_parser.add_argument('-RecordAddress', action='store', required=True, dest='recordaddress')
 	base_group = add_domaindnsrecord_parser.add_mutually_exclusive_group()
 	base_group.add_argument('-BaseDN', action='store', dest='basedn', type=lambda value: escape_filter_chars_except_asterisk(value))
 	base_group.add_argument('-Legacy', action='store_true', default=False, dest='legacy')
@@ -1287,27 +1288,27 @@ def powerview_arg_parse(cmd):
 
 	# add domain group
 	add_domaingroup_parser = subparsers.add_parser('Add-DomainGroup', aliases=['Add-ADGroup'], exit_on_error=False)
-	add_domaingroup_parser.add_argument('-Identity', action='store', default=None, const=None, dest='identity')
+	add_domaingroup_parser.add_argument('-Identity', action='store', required=True, default=None, const=None, dest='identity', type=parse_identity_list)
 	add_domaingroup_parser.add_argument('-BaseDN', action='store', default=None, const=None, dest='basedn', type=lambda value: escape_filter_chars_except_asterisk(value))
 	add_domaingroup_parser.add_argument('-Server', action='store', dest='server')
 	add_domaingroup_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# remove domain user
 	remove_domainuser_parser = subparsers.add_parser('Remove-DomainUser', aliases=['Remove-ADUser'], exit_on_error=False)
-	remove_domainuser_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	remove_domainuser_parser.add_argument('-Identity', action='store', required=True, dest='identity', type=parse_identity_list)
 	remove_domainuser_parser.add_argument('-Server', action='store', dest='server')
 	remove_domainuser_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# remove domain computer
 	remove_domaincomputer_parser = subparsers.add_parser('Remove-DomainComputer', aliases=['Remove-ADComputer'], exit_on_error=False)
-	remove_domaincomputer_parser.add_argument('-ComputerName',action='store', const=None, dest='computername', type=lambda value: escape_filter_chars_except_asterisk(value))
+	remove_domaincomputer_parser.add_argument('-ComputerName', action='store', required=True, const=None, dest='computername', type=lambda value: escape_filter_chars_except_asterisk(value))
 	remove_domaincomputer_parser.add_argument('-BaseDN', action='store', default=None, const=None, dest='basedn', type=lambda value: escape_filter_chars_except_asterisk(value))
 	remove_domaincomputer_parser.add_argument('-Server', action='store', dest='server')
 	remove_domaincomputer_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# set domain object properties
 	set_domainobject_parser = subparsers.add_parser('Set-DomainObject', aliases=['Set-ADObject'], exit_on_error=False)
-	set_domainobject_parser.add_argument('-Identity', action='store', dest='identity', required=True, type=lambda value: escape_filter_chars_except_asterisk(value))
+	set_domainobject_parser.add_argument('-Identity', action='store', dest='identity', required=True, type=parse_identity_list)
 	set_domainobject_group = set_domainobject_parser.add_mutually_exclusive_group(required=True)
 	set_domainobject_group.add_argument('-Set', dest='set')
 	set_domainobject_group.add_argument('-Remove', dest='remove')
@@ -1319,7 +1320,7 @@ def powerview_arg_parse(cmd):
 
 	# set domain object distinguishednam
 	set_domainobjectdn_parser = subparsers.add_parser('Set-DomainObjectDN', aliases=['Set-ADObjectDN'], exit_on_error=False)
-	set_domainobjectdn_parser.add_argument('-Identity', action='store', dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value), required=True)
+	set_domainobjectdn_parser.add_argument('-Identity', action='store', dest='identity', type=parse_identity_list, required=True)
 	set_domainobjectdn_parser.add_argument('-DestinationDN', action='store', dest='destination_dn', required=True)
 	set_domainobjectdn_parser.add_argument('-SearchBase', action='store', dest='searchbase', type=lambda value: escape_filter_chars_except_asterisk(value))
 	set_domainobjectdn_parser.add_argument('-Server', action='store', dest='server')
@@ -1328,15 +1329,15 @@ def powerview_arg_parse(cmd):
 	# set dns record
 	set_domaindnsrecord_parser = subparsers.add_parser('Set-DomainDNSRecord', exit_on_error=False)
 	set_domaindnsrecord_parser.add_argument('-ZoneName', action='store', dest='zonename')
-	set_domaindnsrecord_parser.add_argument('-RecordName', action='store', dest='recordname')
-	set_domaindnsrecord_parser.add_argument('-RecordAddress', action='store', dest='recordaddress')
+	set_domaindnsrecord_parser.add_argument('-RecordName', action='store', required=True, dest='recordname')
+	set_domaindnsrecord_parser.add_argument('-RecordAddress', action='store', required=True, dest='recordaddress')
 	set_domaindnsrecord_parser.add_argument('-Server', action='store', dest='server')
 	set_domaindnsrecord_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# remove dns record
 	remove_domaindnsrecord_parser = subparsers.add_parser('Remove-DomainDNSRecord', exit_on_error=False)
 	remove_domaindnsrecord_parser.add_argument('-ZoneName', action='store', dest='zonename')
-	remove_domaindnsrecord_parser.add_argument('-RecordName', action='store', dest='recordname', type=lambda value: escape_filter_chars_except_asterisk(value))
+	remove_domaindnsrecord_parser.add_argument('-RecordName', action='store', required=True, dest='recordname', type=lambda value: escape_filter_chars_except_asterisk(value))
 	base_group = remove_domaindnsrecord_parser.add_mutually_exclusive_group()
 	base_group.add_argument('-BaseDN', action='store', dest='basedn', type=lambda value: escape_filter_chars_except_asterisk(value))
 	base_group.add_argument('-Legacy', action='store_true', default=False, dest='legacy')
@@ -1348,13 +1349,13 @@ def powerview_arg_parse(cmd):
 	# disable dns record
 	disable_domaindnsrecord_parser = subparsers.add_parser('Disable-DomainDNSRecord', exit_on_error=False)
 	disable_domaindnsrecord_parser.add_argument('-ZoneName', action='store', dest='zonename')
-	disable_domaindnsrecord_parser.add_argument('-RecordName', action='store', dest='recordname', type=lambda value: escape_filter_chars_except_asterisk(value))
+	disable_domaindnsrecord_parser.add_argument('-RecordName', action='store', required=True, dest='recordname', type=lambda value: escape_filter_chars_except_asterisk(value))
 	disable_domaindnsrecord_parser.add_argument('-Server', action='store', dest='server')
 	disable_domaindnsrecord_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# restore domain object
 	restore_domainobject_parser = subparsers.add_parser('Restore-DomainObject', aliases=['Restore-ADObject'], exit_on_error=False)
-	restore_domainobject_parser.add_argument('-Identity', action='store', required=True, dest='identity', type=lambda value: escape_filter_chars_except_asterisk(value))
+	restore_domainobject_parser.add_argument('-Identity', action='store', required=True, dest='identity', type=parse_identity_list)
 	restore_domainobject_parser.add_argument('-NewName', action='store', dest='new_name')
 	restore_domainobject_parser.add_argument('-TargetPath', action='store', dest='targetpath')
 	restore_domainobject_parser.add_argument('-Server', action='store', dest='server')
@@ -1362,8 +1363,8 @@ def powerview_arg_parse(cmd):
 
 	# set domain ca template properties
 	set_domaincatemplate_parser = subparsers.add_parser('Set-DomainCATemplate', aliases=['Set-CATemplate'], exit_on_error=False)
-	set_domaincatemplate_parser.add_argument('-Identity', action='store', dest='identity')
-	set_domaincatemplate_group = set_domaincatemplate_parser.add_mutually_exclusive_group()
+	set_domaincatemplate_parser.add_argument('-Identity', action='store', required=True, dest='identity', type=parse_identity_list)
+	set_domaincatemplate_group = set_domaincatemplate_parser.add_mutually_exclusive_group(required=True)
 	set_domaincatemplate_group.add_argument('-Set', dest='set')
 	set_domaincatemplate_group.add_argument('-Append', dest='append')
 	set_domaincatemplate_group.add_argument('-Clear',action='store', dest='clear')
@@ -1372,31 +1373,31 @@ def powerview_arg_parse(cmd):
 
 	# set domain user password
 	set_domainuserpassword_parser = subparsers.add_parser('Set-DomainUserPassword', exit_on_error=False)
-	set_domainuserpassword_parser.add_argument('-Identity', action='store', dest='identity')
-	set_domainuserpassword_parser.add_argument('-AccountPassword', action='store', dest='accountpassword')
+	set_domainuserpassword_parser.add_argument('-Identity', action='store', required=True, dest='identity', type=parse_identity_list)
+	set_domainuserpassword_parser.add_argument('-AccountPassword', action='store', required=True, dest='accountpassword')
 	set_domainuserpassword_parser.add_argument('-OldPassword', action='store', dest='oldpassword')
 	set_domainuserpassword_parser.add_argument('-Server', action='store', dest='server')
 	set_domainuserpassword_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# set domain computer password
 	set_domaincomputerpassword_parser = subparsers.add_parser('Set-DomainComputerPassword', exit_on_error=False)
-	set_domaincomputerpassword_parser.add_argument('-Identity', action='store', dest='identity')
-	set_domaincomputerpassword_parser.add_argument('-AccountPassword', action='store', dest='accountpassword')
+	set_domaincomputerpassword_parser.add_argument('-Identity', action='store', required=True, dest='identity', type=parse_identity_list)
+	set_domaincomputerpassword_parser.add_argument('-AccountPassword', action='store', required=True, dest='accountpassword')
 	set_domaincomputerpassword_parser.add_argument('-OldPassword', action='store', dest='oldpassword')
 	set_domaincomputerpassword_parser.add_argument('-Server', action='store', dest='server')
 	set_domaincomputerpassword_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# set domain rbcd
 	set_domainrbcd_parser = subparsers.add_parser('Set-DomainRBCD', aliases=['Set-RBCD'], exit_on_error=False)
-	set_domainrbcd_parser.add_argument('-Identity', action='store', const=None, dest='identity')
-	set_domainrbcd_parser.add_argument('-DelegateFrom', action='store', const=None, dest='delegatefrom')
+	set_domainrbcd_parser.add_argument('-Identity', action='store', required=True, const=None, dest='identity', type=parse_identity_list)
+	set_domainrbcd_parser.add_argument('-DelegateFrom', action='store', required=True, const=None, dest='delegatefrom')
 	set_domainrbcd_parser.add_argument('-SearchBase', action='store', dest='searchbase')
 	set_domainrbcd_parser.add_argument('-Server', action='store', dest='server')
 	set_domainrbcd_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# set shadow credentials
 	set_shadowcred_parser = subparsers.add_parser('Set-ShadowCredential', aliases=['Set-ShadowCred'], exit_on_error=False)
-	set_shadowcred_parser.add_argument('-Identity', action='store', const=None, dest='identity')
+	set_shadowcred_parser.add_argument('-Identity', action='store', const=None, dest='identity', required=True, type=parse_identity_list)
 	action_group = set_shadowcred_parser.add_mutually_exclusive_group()
 	action_group.add_argument('-Add', action='store_true', dest='add')
 	action_group.add_argument('-Remove', action='store_true', dest='remove')
@@ -1415,16 +1416,16 @@ def powerview_arg_parse(cmd):
 
 	# set domain object owner
 	set_domainobjectowner_parser = subparsers.add_parser('Set-DomainObjectOwner', aliases=['Set-ObjectOwner'], exit_on_error=False)
-	set_domainobjectowner_parser.add_argument('-TargetIdentity', action='store', const=None, dest='targetidentity')
-	set_domainobjectowner_parser.add_argument('-PrincipalIdentity', action='store', const=None, dest='principalidentity')
+	set_domainobjectowner_parser.add_argument('-TargetIdentity', action='store', required=True, const=None, dest='targetidentity')
+	set_domainobjectowner_parser.add_argument('-PrincipalIdentity', action='store', required=True, const=None, dest='principalidentity')
 	set_domainobjectowner_parser.add_argument('-SearchBase', action='store', dest='searchbase')
 	set_domainobjectowner_parser.add_argument('-Server', action='store', dest='server')
 	set_domainobjectowner_parser.add_argument('-OutFile', action='store', dest='outfile')
 
 	# new gp link
 	add_gplink_parser = subparsers.add_parser('Add-GPLink', exit_on_error=False)
-	add_gplink_parser.add_argument('-GUID', action='store', const=None, dest='guid')
-	add_gplink_parser.add_argument('-TargetIdentity', action='store', const=None, dest='targetidentity')
+	add_gplink_parser.add_argument('-GUID', action='store', required=True, const=None, dest='guid')
+	add_gplink_parser.add_argument('-TargetIdentity', action='store', required=True, const=None, dest='targetidentity')
 	add_gplink_parser.add_argument('-LinkEnabled', action='store', dest='link_enabled', default="Yes", choices=["Yes","No"])
 	add_gplink_parser.add_argument('-Enforced', action='store', dest='enforced', default="No", choices=["Yes","No"])
 	add_gplink_parser.add_argument('-TargetSearchBase', action='store', dest='targetsearchbase')
@@ -1434,8 +1435,8 @@ def powerview_arg_parse(cmd):
 
 	# new gp link
 	remove_gplink_parser = subparsers.add_parser('Remove-GPLink', exit_on_error=False)
-	remove_gplink_parser.add_argument('-GUID', action='store', const=None, dest='guid')
-	remove_gplink_parser.add_argument('-TargetIdentity', action='store', const=None, dest='targetidentity')
+	remove_gplink_parser.add_argument('-GUID', action='store', required=True, const=None, dest='guid')
+	remove_gplink_parser.add_argument('-TargetIdentity', action='store', required=True, const=None, dest='targetidentity')
 	remove_gplink_parser.add_argument('-TargetSearchBase', action='store', dest='targetsearchbase')
 	remove_gplink_parser.add_argument('-GPOSearchBase', action='store', dest='gposearchbase')
 	remove_gplink_parser.add_argument('-Server', action='store', dest='server')
@@ -1476,7 +1477,7 @@ def powerview_arg_parse(cmd):
 						return None
 				else:
 					if hasattr(args, 'identity'):
-						args.identity = escape_filter_chars_except_asterisk(unk)
+						args.identity = parse_identity_list(unk)
 					elif hasattr(args, 'objectsid'):
 						args.objectsid = unk
 					elif hasattr(args, 'value'):
@@ -1501,7 +1502,12 @@ def powerview_arg_parse(cmd):
 			args.username = parsed_username['username']
 
 		if hasattr(args, 'identity') and args.identity:
-			args.identity = args.identity.strip()
+			if isinstance(args.identity, list):
+				args.identity = [item.strip() for item in args.identity if isinstance(item, str) and item.strip()]
+				if len(args.identity) == 1:
+					args.identity = args.identity[0]
+			elif isinstance(args.identity, str):
+				args.identity = args.identity.strip()
 
 		return args
 	except argparse.ArgumentError as e:

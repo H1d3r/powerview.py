@@ -1,5 +1,5 @@
 from .. import OPERATIONAL_ATTRIBUTES, RESOURCE, RESOURCE_FACTORY, ENUMERATION, ACCOUNT_MANAGEMENT, TOPOLOGY_MANAGEMENT, COMMON_ATTRIBUTES
-from ..operation.search import search_operation, handle_str_to_xml, handle_enum_ctx, parse_adws_pull_response, xml_to_dict
+from ..operation.search import search_operation, handle_str_to_xml, handle_enum_ctx, xml_to_dict
 from ..operation.modify import modify_operation
 from ..operation.delete import delete_operation
 from ..operation.add import add_operation
@@ -125,50 +125,32 @@ class Connection(object):
     def is_connection_alive(self):
         """
         Check if the ADWS connection is alive.
-        Compatible with the connection pool interface.
+        Uses getpeername() to verify the underlying socket is still connected.
+        Does NOT use select/MSG_PEEK which corrupts the NNS encrypted stream.
         """
         try:
-            # For ADWS, if we're marked as bound and not closed, consider it alive
-            # The socket-level checks might be too strict for ADWS connections
             if self.closed or not self.bound:
                 return False
-            
-            # Basic check that we have an nmf connection
             if not hasattr(self, 'nmf') or self.nmf is None:
                 return False
-            
-            # For now, return True if basic state is valid
-            # ADWS connections are more complex and may not follow standard socket patterns
+            # Use getpeername() to check if socket is still connected
+            self.nmf._sock.getpeername()
             return True
-        except Exception:
+        except (OSError, AttributeError):
             return False
     
     def abandon(self, message_id):
         """
-        ADWS abandon operation (lightweight keep-alive).
-        Compatible with ldap3 abandon for keep-alive purposes.
+        ADWS has no abandon operation. Used for keep-alive compatibility with ldap3.
         """
-        # For ADWS, we don't have a direct abandon operation
-        # This is used primarily for keep-alive testing
         return self.is_connection_alive()
-    
+
     def keep_alive(self):
         """
-        Perform a lightweight ADWS operation to keep the connection alive.
+        Check if the ADWS connection is still alive.
         Compatible with the connection pool interface.
-        
-        Returns:
-            bool: True if connection is still alive, False otherwise
         """
-        try:
-            # Use the abandon method for lightweight keep-alive
-            result = self.abandon(0)
-            if result:
-                logging.debug(f"[ADWS Connection] Keep-alive check: Success")
-            return result
-        except Exception as e:
-            logging.debug(f"[ADWS Connection] Keep-alive check failed: {str(e)}")
-            return False
+        return self.is_connection_alive()
 
     def _create_NNS_from_auth(self, sock: socket.socket) -> NNS:
         if self.authentication == NTLM:
@@ -295,22 +277,62 @@ class Connection(object):
             if enum_ctx is None:
                 raise ValueError("Enum Context not found in response")
 
-            # now we need to pull the results from the server
-            pull_request = handle_enum_ctx(self.host, enum_ctx)
-            response = self.send_and_recv(pull_request)
-            #results = parse_adws_pull_response(response)
-            resp_dict = xml_to_dict(response, attributes)
-            if resp_dict.get('entries'):
-                for entry in resp_dict['entries']:
-                    for attribute in entry['attributes']:
-                        entry['attributes'][attribute] = format_attribute_values(self.server.schema, attribute, entry['attributes'][attribute], self.server.custom_formatter)
-            #self._prepare_return_value(resp_dict)
-            return resp_dict.get('entries', [])
+            # Pull results in a loop until EndOfSequence.
+            # In WS-Enumeration the EnumerationContext is a session handle that
+            # stays the same across pulls — the server tracks cursor position
+            # internally.  We stop when:
+            #   1. EndOfSequence element is present, OR
+            #   2. A non-empty pull returns fewer items than MaxElements (last page)
+            MAX_PULL_ELEMENTS = 256  # must match MaxElements in LDAP_PULL_FSTRING
+            MAX_EMPTY_PULLS = 3     # safety: consecutive empty pulls before giving up
+            all_entries = []
+            pull_count = 0
+            consecutive_empty = 0
+            while True:
+                pull_count += 1
+                pull_request = handle_enum_ctx(self.host, enum_ctx)
+                response = self.send_and_recv(pull_request)
+                resp_dict = xml_to_dict(response, attributes)
+
+                entries = resp_dict.get('entries', [])
+                logging.debug(f"[ADWS] Pull #{pull_count}: {len(entries)} entries, EndOfSequence={resp_dict.get('EndOfSequence', False)}")
+
+                if entries:
+                    consecutive_empty = 0
+                    for entry in entries:
+                        for attribute in entry['attributes']:
+                            entry['attributes'][attribute] = format_attribute_values(self.server.schema, attribute, entry['attributes'][attribute], self.server.custom_formatter)
+                    all_entries.extend(entries)
+                else:
+                    consecutive_empty += 1
+
+                # EndOfSequence in response means we're done
+                if resp_dict.get('EndOfSequence'):
+                    self.last_cookie = None
+                    break
+
+                # A non-empty pull with fewer entries than MaxElements = last page
+                if entries and len(entries) < MAX_PULL_ELEMENTS:
+                    self.last_cookie = None
+                    break
+
+                # Safety: too many consecutive empty pulls means something is wrong
+                if consecutive_empty >= MAX_EMPTY_PULLS:
+                    logging.debug(f"[ADWS] {MAX_EMPTY_PULLS} consecutive empty pulls, stopping")
+                    self.last_cookie = None
+                    break
+
+                # Update enum context if server provides a new one
+                new_enum_ctx = resp_dict.get('EnumerationContext')
+                if new_enum_ctx:
+                    enum_ctx = new_enum_ctx
+
+            logging.debug(f"[ADWS] Search complete: {len(all_entries)} total entries in {pull_count} pulls")
+            return all_entries
         except ADWSError as e:
-            if "size limit was exceeded" in str(e).lower() and attributes and isinstance(attributes, list):
-                logging.warning("Size limit was exceeded, trying default attributes")
-                attributes = COMMON_ATTRIBUTES
-                return self.search(search_base, search_filter, search_scope, attributes, size_limit, time_limit, types_only, get_operational_attributes, controls, paged_size, paged_criticality, paged_cookie, auto_escape)
+            if "size limit was exceeded" in str(e).lower() and attributes and isinstance(attributes, list) and attributes != [ALL_ATTRIBUTES]:
+                logging.warning("Size limit was exceeded, retrying with wildcard attributes")
+                return self.search(search_base, search_filter, search_scope, [ALL_ATTRIBUTES], size_limit, time_limit, types_only, get_operational_attributes, controls, paged_size, paged_criticality, paged_cookie, auto_escape)
             else:
                 raise
 
@@ -353,18 +375,18 @@ class Connection(object):
                 if self.server.schema.attribute_types and attribute_name_to_check.lower() not in conf_attributes_excluded_from_check and attribute_name_to_check not in self.server.schema.attribute_types:
                     self.last_error = 'invalid attribute type ' + attribute_name_to_check
                     raise LDAPAttributeError(self.last_error)
-        change = changes[attribute_name]
-        if isinstance(change, SEQUENCE_TYPES) and change[0] in [MODIFY_ADD, MODIFY_DELETE, MODIFY_REPLACE, MODIFY_INCREMENT, 0, 1, 2, 3]:
-            if len(change) != 2:
-                self.last_error = 'malformed change'
-                raise LDAPChangeError(self.last_error)
-            changelist[attribute_name] = [change]  # insert change in a list
-        else:
-            for change_operation in change:
-                if len(change_operation) != 2 or change_operation[0] not in [MODIFY_ADD, MODIFY_DELETE, MODIFY_REPLACE, MODIFY_INCREMENT, 0, 1, 2, 3]:
-                    self.last_error = 'invalid change list'
+            change = changes[attribute_name]
+            if isinstance(change, SEQUENCE_TYPES) and change[0] in [MODIFY_ADD, MODIFY_DELETE, MODIFY_REPLACE, MODIFY_INCREMENT, 0, 1, 2, 3]:
+                if len(change) != 2:
+                    self.last_error = 'malformed change'
                     raise LDAPChangeError(self.last_error)
-            changelist[attribute_name] = change
+                changelist[attribute_name] = [change]  # insert change in a list
+            else:
+                for change_operation in change:
+                    if len(change_operation) != 2 or change_operation[0] not in [MODIFY_ADD, MODIFY_DELETE, MODIFY_REPLACE, MODIFY_INCREMENT, 0, 1, 2, 3]:
+                        self.last_error = 'invalid change list'
+                        raise LDAPChangeError(self.last_error)
+                changelist[attribute_name] = change
         
         request = modify_operation(self.host, dn, changelist, self.auto_encode, self.server.schema if self.server else None, validator=self.server.custom_validator if self.server else None, check_names=self.check_names)
         response = self.send_and_recv(request)
